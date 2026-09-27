@@ -1,0 +1,81 @@
+# ============================================================================
+# fainput: 云端构建 APK
+#
+# 为什么要在云端编：
+#   本机是 ARM64 安卓手机，SDK build-tools 里的 host 工具（aapt2 / aidl / ...）
+#   是 x86_64 ELF，在 ARM64 上内核返回 ENOEXEC，shell 会把它当脚本解释，
+#   报出极具误导性的 "Syntax error: word unexpected (expecting \")\")"。
+#   云端是 x86_64，这些问题全部不存在。
+#
+# 本文件结构参考上游 .github/workflows/pull_request.yml（已按其验证过的组合）。
+#
+# 触发：任意分支 push，或手动 workflow_dispatch
+# 产物：app/build/outputs/apk/debug/*.apk  →  Actions → Artifacts
+# ============================================================================
+
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: assembleDebug (arm64-v8a)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - name: Fetch source code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Android environment
+        uses: android-actions/setup-android@v4
+
+      - name: Install CMake
+        # 与 Versions.kt 的 defaultCMake 一致。
+        # NDK (28.0.13004108) 不显式安装 —— AGP 会按 ndkVersion 自动下载，
+        # 上游 workflow 也是这么做的。
+        run: |
+          sdkmanager --install "cmake;3.31.6"
+
+      - name: Install system dependencies
+        # gettext 提供 msgfmt/msgmerge/xgettext；
+        # extra-cmake-modules 提供 ECM（本仓库已 vendored 一份兜底，
+        # lib/fcitx5/src/main/cpp/cmake/FindECM.cmake 会优先用 vendored 的）。
+        run: |
+          sudo apt update
+          sudo apt install -y extra-cmake-modules gettext
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build Debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug
+
+      - name: List APK
+        if: always()
+        run: |
+          find . -path '*/outputs/apk/*' -name '*.apk' -exec ls -lh {} \; || true
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: fainput-debug-arm64
+          path: app/build/outputs/apk/debug/
+          if-no-files-found: error
+          retention-days: 30

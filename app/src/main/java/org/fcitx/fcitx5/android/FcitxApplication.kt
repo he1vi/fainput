@@ -20,6 +20,7 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.plus
 import org.fcitx.fcitx5.android.daemon.FcitxDaemon
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
+import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.theme.ThemeManager
@@ -68,6 +69,21 @@ class FcitxApplication : Application() {
             } else {
                 Timber.i("Received broadcast '${intent.action}', but there's no fcitx instance")
             }
+        }
+    }
+
+    /**
+     * 【fainput】后台维护的触发时机。
+     *
+     * 只在**充电**和**熄屏**时叫一声 —— 这两个时刻用户不会因为我们的计算而卡顿。
+     * 真正"该不该跑"由 `InsightMaintenance` 内部的判断树决定（见 DeviceState）。
+     *
+     * 用动态注册而不是 manifest：`ACTION_SCREEN_OFF` / `ACTION_POWER_CONNECTED`
+     * 都不能静态注册（Android 8+ 隐式广播限制）。
+     */
+    private val insightMaintenanceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            InsightMaintenance.trigger(intent.action ?: "unknown")
         }
     }
 
@@ -137,6 +153,16 @@ class FcitxApplication : Application() {
         ClipboardManager.init(ctx)
         // 【fainput】输入行为采集：本地落库，见 data/insight/
         InsightRecorder.init(ctx)
+        // 【fainput】充电 / 熄屏时叫一下后台维护（存储分层归档）
+        ContextCompat.registerReceiver(
+            this,
+            insightMaintenanceReceiver,
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_POWER_CONNECTED)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         ThemeManager.init(resources.configuration)
         Locales.onLocaleChange(resources.configuration)
         registerReceiver(shutdownReceiver, IntentFilter(Intent.ACTION_SHUTDOWN))

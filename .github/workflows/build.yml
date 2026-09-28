@@ -84,6 +84,37 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleDebug
 
+      - name: "★ 策略门禁：零网络承诺"
+        # fainput 的核心承诺是「数据不出设备」。
+        # 这条门禁在**构建产物**上检查，而不是源码 manifest ——
+        # 因为依赖库可能通过 manifest merger 偷偷注入权限。
+        #
+        # 一旦有人（或某个库）引入了 INTERNET 权限，构建当场失败。
+        run: |
+          set -o pipefail
+          APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -n1)
+          echo "检查产物: $APK"
+          if [ -z "$APK" ]; then
+            echo "::error::没找到 APK"
+            exit 1
+          fi
+
+          AAPT2=$(find "$ANDROID_HOME/build-tools" -name aapt2 2>/dev/null | sort -V | tail -n1)
+          echo "aapt2: $AAPT2"
+          "$AAPT2" dump permissions "$APK" > /tmp/perms.txt || true
+
+          echo "──────── 权限清单 ────────"
+          cat /tmp/perms.txt
+          echo "──────────────────────────"
+
+          if grep -q 'android.permission.INTERNET' /tmp/perms.txt; then
+            echo "::error::★ 策略违规：APK 声明了 INTERNET 权限！"
+            echo "::error::fainput 必须零网络。请检查新引入的依赖库。"
+            exit 1
+          fi
+
+          echo "✅ 零网络承诺验证通过：产物未声明 INTERNET 权限"
+
       - name: List APK
         if: always()
         run: |

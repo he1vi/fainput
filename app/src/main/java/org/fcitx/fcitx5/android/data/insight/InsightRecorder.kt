@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.fcitx.fcitx5.android.core.FcitxEvent
+import org.fcitx.fcitx5.android.core.FcitxKeyMapping
 import org.fcitx.fcitx5.android.data.insight.db.InputEventEntity
 import org.fcitx.fcitx5.android.data.insight.db.InsightDao
 import org.fcitx.fcitx5.android.data.insight.db.InsightDatabase
@@ -112,15 +113,32 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         if (db != null) return
         val database = Room
             .databaseBuilder(context.applicationContext, InsightDatabase::class.java, "insight")
+            // ★ 必须挂迁移：v1 → v2 加了 daily_stat（存储分层的冷表）。
+            //   不加的话 Room 会抛异常，加了 destructive 就会清空用户数据 ——
+            //   而"数据不能丢"正是这个项目存在的理由。
+            .addMigrations(*InsightDatabase.MIGRATIONS)
             .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
             .build()
         db = database
-        dao = database.insightDao()
+        val d = database.insightDao()
+        dao = d
         Timber.i("[insight] database ready")
+        // 存储分层归档器（机会式触发，详见 InsightMaintenance）
+        InsightMaintenance.init(database, d)
+        InsightMaintenance.trigger("app-start")
     }
 
     val isReady: Boolean
         get() = dao != null
+
+    /**
+     * 供 UI（C 阶段「输入数据」页）**只读**使用。
+     *
+     * 为什么只暴露读：所有写入都必须走本对象，才能保证
+     * 「先分级、再落库」这条铁律不被绕过。
+     */
+    val daoOrNull: InsightDao?
+        get() = dao
 
     /**
      * 输入框聚焦。由 `FcitxInputMethodService.onStartInput` 调用。
@@ -177,6 +195,21 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         eventTap[name] = (eventTap[name] ?: 0) + 1
     }
 
+    /**
+     * 上游在 KeyEvent 分支里**单独处理**的四个导航键 ——
+     * 它们不算"直通提交"，不能当成字符记下来。
+     *
+     * ⚠️ 这个列表必须和 `FcitxInputMethodService.handleFcitxEvent` 里的
+     *    `when (it.sym.sym)` 保持一致，否则会把退格/回车当成普通字符记进库。
+     */
+    private fun isNavKey(sym: Int): Boolean = when (sym) {
+        FcitxKeyMapping.FcitxKey_BackSpace,
+        FcitxKeyMapping.FcitxKey_Return,
+        FcitxKeyMapping.FcitxKey_Left,
+        FcitxKeyMapping.FcitxKey_Right -> true
+        else -> false
+    }
+
     // ==================== 事件入口 ====================
 
     /**
@@ -188,9 +221,30 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         if (!isReady) return
         when (event) {
             is FcitxEvent.KeyEvent -> {
-                // 只算按下，不然一次按键算两遍
-                if (!event.data.up) keyCount++
-                tap(if (event.data.states.virtual) "Key:virtual" else "Key:physical")
+                val d = event.data
+                if (d.states.virtual && !d.up && d.unicode > 0 && !isNavKey(d.sym.sym)) {
+                    // ★★ 关键补漏 ★★
+                    //
+                    // 引擎**没消费**这个键时，上游会用
+                    //     commitText(Character.toString(it.unicode))
+                    // **直接提交** —— 它根本不会发 CommitStringEvent。
+                    //
+                    // 后果（实测）：用户打的 `1263826%#*@&...` 和 `-361816+9/ *8-60`
+                    // **一个字都没进库**，整整漏掉 40 个字符。
+                    //
+                    // 所以在这里补一刀，把直通提交也当成一次提交记下来。
+                    tap("Key:direct")
+                    record(Character.toString(d.unicode))
+                    return
+                }
+                // 只算按下，不然一次按键算两遍。
+                //
+                // ⚠️ 注意语义：**拼音输入的键被引擎消费掉，根本不会到这里**。
+                //    实测拼音连续输入时 keyCount 恒为 0。
+                //    所以「码长」必须看 preeditLength，不能看 keyCount。
+                //    keyCount 只反映"引擎放行的键"。
+                if (!d.up) keyCount++
+                tap(if (d.states.virtual) "Key:virtual" else "Key:physical")
             }
 
             // ---- 预编辑（拼音串）----
@@ -214,12 +268,19 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
 
             // ---- 候选 ----
             is FcitxEvent.CandidateListEvent -> {
-                // 只在 PagedCandidate 没来过时兜底。
-                // ★ 用 candidates.size 而不是 total ——
+                // ★ 实测修正：fcitx5-android **只发 CandidateList，不发 PagedCandidate**
+                //   （探针 tap={PagedCandidate=0} 已证实）。
+                //   所以候选页的真正来源在这里，不是 PagedCandidate。
+                //
+                //   用 candidates.size 而不是 total ——
                 //   total 是"引擎能提供的候选总数"（实测「你好」= 606），
-                //   那是真实数字但对"好不好选"毫无意义。
-                if (candidateCount == 0 && event.data.candidates.isNotEmpty()) {
-                    candidateCount = event.data.candidates.size
+                //   真实但对"好不好选"毫无意义；
+                //   candidates.size 才是"用户这一页看到几个"。
+                val list = event.data.candidates
+                if (list.isNotEmpty()) {
+                    candidateCount = list.size
+                    // 存下来，提交时反查"用户选了第几个"
+                    lastCandidates = list.map { it.text }
                 }
                 tap("CandidateList")
             }
@@ -365,7 +426,10 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
     }
 
     private suspend fun bumpWord(d: InsightDao, word: String, now: Long, index: Int) {
-        if (word.isEmpty() || word.length > MAX_WORD_LENGTH) return
+        // 长度 1 的不进词表：直通提交会把单个数字/符号/字母刷进来，
+        // 一串密码般的符号就能产生几十行噪音。
+        // 词表要的是"词"，不是字符。
+        if (word.length < 2 || word.length > MAX_WORD_LENGTH) return
         val indexSum = if (index >= 0) index else 0
         val indexCount = if (index >= 0) 1 else 0
         val rowId = d.insertWord(

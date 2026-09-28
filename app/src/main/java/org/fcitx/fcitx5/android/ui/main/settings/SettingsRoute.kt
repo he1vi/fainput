@@ -20,6 +20,7 @@ import org.fcitx.fcitx5.android.core.RawConfig
 import org.fcitx.fcitx5.android.data.quickphrase.QuickPhrase
 import org.fcitx.fcitx5.android.ui.main.AboutFragment
 import org.fcitx.fcitx5.android.ui.main.DeveloperFragment
+import org.fcitx.fcitx5.android.ui.main.InsightFragment
 import org.fcitx.fcitx5.android.ui.main.LicensesFragment
 import org.fcitx.fcitx5.android.ui.main.MainFragment
 import org.fcitx.fcitx5.android.ui.main.PluginFragment
@@ -85,6 +86,10 @@ sealed class SettingsRoute : Parcelable {
 
     @Serializable
     data object Advanced : SettingsRoute()
+
+    /** 【fainput】「输入数据」—— C 阶段：实时镜像 + 学习状态 + 高频词 */
+    @Serializable
+    data object Insight : SettingsRoute()
 
     @Serializable
     data object Developer : SettingsRoute()
@@ -224,6 +229,9 @@ sealed class SettingsRoute : Parcelable {
             }
             fragment<AdvancedSettingsFragment, Advanced> {
                 label = ctx.getString(R.string.advanced)
+            }
+            fragment<InsightFragment, Insight> {
+                label = "输入数据"
             }
             fragment<DeveloperFragment, Developer> {
                 label = ctx.getString(R.string.developer)

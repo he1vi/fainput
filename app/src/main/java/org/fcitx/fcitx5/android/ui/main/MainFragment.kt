@@ -66,6 +66,16 @@ class MainFragment : PaddingPreferenceFragment() {
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         preferenceScreen = preferenceManager.createPreferenceScreen(requireContext()).apply {
+            // 【fainput】放在最上面 —— 这是整个项目存在的理由
+            addCategory("fainput") {
+                addPreference(
+                    "输入数据",
+                    "你的输入习惯：实时统计 · 学习状态 · 最常用的词",
+                    icon = R.drawable.ic_baseline_list_alt_24
+                ) {
+                    navigateWithAnim(SettingsRoute.Insight)
+                }
+            }
             addCategory("Fcitx") {
                 addDestinationPreference(
                     R.string.global_options,

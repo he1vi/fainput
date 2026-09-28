@@ -26,9 +26,18 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         InputEventEntity::class,
         WordStatEntity::class,
         DailyStatEntity::class,
+        WordBigramEntity::class,
     ],
-    version = 2,
-    exportSchema = false
+    version = 3,
+    /**
+     * **打开 schema 导出**（2026-09-28）。
+     *
+     * 原注释说"等表结构稳定后可以打开" —— 现在有三张用户攒出来的表了，
+     * 而且 `MIGRATION_2_3` 是我手写的 DDL：
+     * 打开后每次构建会在 `app/schemas/` 生成 Room 的**权威期望 DDL**，
+     * 手写迁移可以逐字比对，不再靠猜。
+     */
+    exportSchema = true
 )
 abstract class InsightDatabase : RoomDatabase() {
     abstract fun insightDao(): InsightDao
@@ -67,6 +76,30 @@ abstract class InsightDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
+        /**
+         * v2 → v3：新增 `word_bigram`（**M·L1 词搭配**）。
+         *
+         * 和 v1→v2 同一条纪律：上面那张表是用户攒出来的，**不能清库**。
+         *
+         * ⚠️ DDL 必须和 Room 从 [WordBigramEntity] 生成的**完全一致**
+         *    （列名 / 列序 / NOT NULL / DEFAULT / 主键顺序都要对上），
+         *    否则 Room 打开数据库时校验 schema 会直接抛异常。
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `word_bigram` (
+                        `a` TEXT NOT NULL,
+                        `b` TEXT NOT NULL,
+                        `count` INTEGER NOT NULL DEFAULT 0,
+                        `firstSeen` INTEGER NOT NULL,
+                        `lastSeen` INTEGER NOT NULL,
+                        PRIMARY KEY(`a`, `b`)
+                    )"""
+                )
+            }
+        }
+
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
     }
 }

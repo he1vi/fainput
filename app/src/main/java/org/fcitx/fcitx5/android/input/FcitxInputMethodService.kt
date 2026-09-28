@@ -59,6 +59,7 @@ import org.fcitx.fcitx5.android.daemon.FcitxConnection
 import org.fcitx.fcitx5.android.daemon.FcitxDaemon
 import org.fcitx.fcitx5.android.data.InputFeedbacks
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
+import org.fcitx.fcitx5.android.data.ime.DefaultIme
 import org.fcitx.fcitx5.android.data.insight.PersonalDictionary
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
@@ -449,6 +450,14 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
         lifecycleScope.launch {
             runCatching {
                 fcitx.runOnReady { PersonalDictionary.publishIfNeeded(this) }
+            }
+        }
+        // 【fainput】默认输入法 = 拼音，英文并存。只做一次。
+        // 放在「提交」这一刻是因为 `enumerate` 需要**活跃的输入框** —— 此刻正好有。
+        val appCtx = applicationContext
+        lifecycleScope.launch {
+            runCatching {
+                fcitx.runOnReady { DefaultIme.applyIfNeeded(appCtx, this) }
             }
         }
         // when composing text equals commit content, finish composing text as-is

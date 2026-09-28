@@ -24,6 +24,8 @@ import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
 import org.fcitx.fcitx5.android.data.insight.PersonalDictionary
+import org.fcitx.fcitx5.android.data.llm.LlmModel
+import org.fcitx.fcitx5.android.data.llm.LlmNative
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.theme.ThemeManager
 import org.fcitx.fcitx5.android.ui.main.LogActivity
@@ -159,6 +161,11 @@ class FcitxApplication : Application() {
         CandidateReranker.init(ctx)
         // 【fainput / D-2+D-3】个人词库：让引擎真正认识你的词
         PersonalDictionary.init(ctx)
+        // 【fainput / L3】报一句 LLM 状态：**后端 + 模型分开说**。
+        // 「构建成功」和「真有 LLM」是两件事 —— 前者只要 CMake 不报错，
+        // 后者要求 ① llama.cpp 真编进来 ② 模型文件真在磁盘上。
+        // 真正的证据是「设置 → fainput → 模型」那一页的"能载入"。
+        Timber.i("[fainput] %s / 模型：%s", LlmNative.statusLine(), LlmModel.statusText())
         // 【fainput】充电 / 熄屏时叫一下后台维护（存储分层归档）
         ContextCompat.registerReceiver(
             this,

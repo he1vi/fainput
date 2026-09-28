@@ -9,6 +9,7 @@ import android.content.SharedPreferences
 import org.fcitx.fcitx5.android.core.FcitxAPI
 import org.fcitx.fcitx5.android.core.data.EngineUserDir
 import org.fcitx.fcitx5.android.core.reloadPinyinCustomPhrase
+import org.fcitx.fcitx5.android.data.insight.db.InsightDao
 import timber.log.Timber
 import java.io.File
 
@@ -82,10 +83,58 @@ object PersonalDictionary {
 
     private const val MAX_CODE_LEN = 12
     private const val MAX_WORD_LEN = 12
+
+    // ==================== 【M·L2】整句 ====================
+
+    /**
+     * 整句路径的 prefs 前缀。
+     * 和单词路径（`c|`）**分开存**，因为两者判据相反、阈值也不同。
+     */
+    private const val K_SENT = "g|"
+
+    /** 整句：码至少这么长。够长的全拼几乎不会和别的词撞车。 */
+    private const val MIN_SENT_CODE = 8
+
+    /** 整句：至少这么多个字（4 字以下算词，走单词路径）。 */
+    private const val MIN_SENT_WORD = 4
+
+    /** 整句要**你特意选中**几次才置顶（比单词的 3 次低一档：长句本来就少）。 */
+    private const val MIN_SENT_CONFIRM = 2
+
+    /** 整句的长度上限 —— D-2 那两个 12 就是整句进不来的原因。 */
+    private const val MAX_SENT_CODE = 48
+    private const val MAX_SENT_WORD = 32
+
+    // ==================== 【M·L3】后台整理 ====================
+
+    /**
+     * 「词 → 拼音码」的记忆前缀。
+     *
+     * 只在 `observe()` 里记，**不过那两道闸** —— 闸管的是"要不要写进引擎词库"，
+     * 这里只是记个映射：有了它，后台才能把一对搭配拼成一个整词的码。
+     */
+    private const val K_CODE = "k|"
+
+    /** 一对搭配至少共现这么多次，才够格长成新词。 */
+    private const val MIN_PAIR_WRITE = 5
+
+    /**
+     * 组合码至少这么长才走绝对优先级轴。
+     *
+     * **从 8 降到 6 的原因**（自查时发现）：最典型的场景是「输入」+「法」
+     * —— `shuru` + `fa` = **7** 个字母，卡在 8 下面，正好被自己的门槛拦掉。
+     *
+     * 6 仍然能滤掉「的」+「了」这类短组合，而真正的撞车风险本来就由
+     * [MIN_PAIR_WRITE]（≥5 次）兜着 —— **你反复这么打，就说明它是个真词组。**
+     */
+    private const val MIN_PAIR_CODE = 6
+
+    /** 一次整理最多处理多少对搭配。 */
+    private const val PAIR_SCAN = 200
     private const val MAX_KEYS = 3000
     private const val MIN_WRITE_INTERVAL_MS = 20_000L
 
-    private const val HEADER = "; fainput 从你的输入里学到的词 —— 可以直接改，也可以整行删掉"
+    private const val HEADER = "; fainput 从你的输入里学到的词和整句 —— 可以直接改，也可以整行删掉"
 
     @Volatile
     private var prefs: SharedPreferences? = null
@@ -118,9 +167,36 @@ object PersonalDictionary {
      * @param offeredByEngine 引擎**这一次**有没有把这个词作为候选给出。
      *        给过 → 我们不写（不能走绝对优先级轴）。
      */
-    fun observe(code: String, word: String, offeredByEngine: Boolean) {
-        val c = normalizeCode(code) ?: return
-        val w = normalizeWord(word) ?: return
+    fun observe(
+        code: String,
+        word: String,
+        offeredByEngine: Boolean,
+        candidateIndex: Int = -1,
+    ) {
+        val w = normalizeWord(word, MAX_SENT_WORD) ?: return
+        val c = normalizeCode(code, MAX_SENT_CODE) ?: return
+
+        // 【M·L3】先记下「词 → 码」。
+        // **刻意放在下面那两道闸之前** —— 闸管的是"要不要写进引擎词库"，
+        // 而这里只是记个映射：后台整理要靠它把一对搭配拼成一个整词的码。
+        if (w.length <= MAX_WORD_LEN && c.length <= MAX_CODE_LEN) {
+            prefs?.edit()?.putString(K_CODE + w, c)?.apply()
+        }
+
+        // 【M·L2】整句路径 —— 判据和单词路径**正好相反**：
+        //
+        //   单词：引擎**给不出**才写。引擎给得出的交给 D-1' 位置提升 ——
+        //        写 order=1 就是"布尔闸门"，那正是 WindInput 记录的事故。
+        //   整句：你**特意选了**才写（candidateIndex ≥ 1 ⇒ 引擎的 N-best 没把它排在前）。
+        //
+        // 整句用的是「整串全拼」，撞车概率极低，不构成对常用词权重轴的干扰。
+        // 这就是 L2 的落点：**用你的选择覆盖引擎的 N-best。**
+        if (w.length >= MIN_SENT_WORD && c.length >= MIN_SENT_CODE && candidateIndex >= 1) {
+            bump(K_SENT + c + "|" + w, MIN_SENT_CONFIRM)
+            return
+        }
+        // 太长的不走单词路径
+        if (w.length > MAX_WORD_LEN || c.length > MAX_CODE_LEN) return
         // ① 引擎自己能给出的词，**绝不写进 customphrase**。
         //    customphrase 的序号是绝对优先级轴，我们无从知道引擎内部权重尺度，
         //    写 order=1 就是"布尔闸门" —— 那正是 WindInput 记录的事故。
@@ -159,6 +235,9 @@ object PersonalDictionary {
         val editor = p.edit()
         var removed = 0
         p.all.forEach { (k, v) ->
+            // ⚠️ String 型键（`k|` 记的「词 → 码」）不是计数器：
+            //    `as? Int` 会得到 null → 0，正好落进"只出现过 1 次"里被误删。
+            if (k.startsWith(K_CODE)) return@forEach
             if (removed < 500 && (v as? Int ?: 0) <= 1) {
                 editor.remove(k)
                 removed++
@@ -217,10 +296,16 @@ object PersonalDictionary {
 
         var added = 0
         p.all.forEach { (key, value) ->
-            if (!key.startsWith(K_WORD)) return@forEach
+            // 【M·L2】两条路径：前缀不同、门槛也不同
+            val threshold = when {
+                key.startsWith(K_WORD) -> MIN_CONFIRM
+                key.startsWith(K_SENT) -> MIN_SENT_CONFIRM
+                else -> return@forEach
+            }
             val count = value as? Int ?: return@forEach
-            if (count < MIN_CONFIRM) return@forEach
-            val body = key.removePrefix(K_WORD)
+            if (count < threshold) return@forEach
+            // 前缀都是 2 个字符（`c|` / `g|`）
+            val body = key.substring(2)
             val sep = body.indexOf('|')
             if (sep <= 0) return@forEach
             val code = body.substring(0, sep)
@@ -256,6 +341,60 @@ object PersonalDictionary {
         val k = keyword.trim()
         if (k.isEmpty()) return entries()
         return entries().filter { it.code.contains(k, true) || it.value.contains(k) }
+    }
+
+    /** 【M·L3】查一个词的拼音码（由 [observe] 记下来的）。 */
+    private fun codeOf(word: String): String? = prefs?.getString(K_CODE + word, null)
+
+    /**
+     * 【M·L3】后台整理：从你的**词搭配**里长出新词。
+     *
+     * ```
+     * 你 5 次以上都是「输入」后面跟「法」
+     *   → 把 `shurufa,1=输入法` 写进引擎词库
+     *   → 引擎自己就认识这个组合了，不再依赖 D-1' 每次帮你提前
+     * ```
+     *
+     * ## 只在充电 / 熄屏时跑
+     *
+     * 由 `InsightMaintenance.runOnce` 调用 —— **绝不进打字路径**。
+     *
+     * ## 门槛为什么这么高
+     *
+     * `customphrase` 的序号是**绝对优先级轴**，`order=1` 就是布尔闸门
+     * （WindInput 的事故）。所以必须**同时**满足：
+     *
+     * - 你**反复**这么打（≥ [MIN_PAIR_WRITE] 次）
+     * - 组合码**长到几乎不会撞车**（≥ [MIN_PAIR_CODE] 个字母）
+     *
+     * 任一条不满足就什么都不做 —— 宁可漏，不可错。
+     *
+     * @return 这次新长出来的词条数（0 表示没有可整理的东西）
+     */
+    suspend fun organize(dao: InsightDao): Int {
+        val p = prefs ?: return 0
+        val pairs = runCatching { dao.strongBigrams(MIN_PAIR_WRITE, PAIR_SCAN) }
+            .getOrNull() ?: return 0
+        if (pairs.isEmpty()) return 0
+        var added = 0
+        pairs.forEach { pair ->
+            val ca = codeOf(pair.a) ?: return@forEach
+            val cb = codeOf(pair.b) ?: return@forEach
+            val code = ca + cb
+            if (code.length < MIN_PAIR_CODE) return@forEach
+            val phrase = pair.a + pair.b
+            if (phrase.length > MAX_WORD_LEN) return@forEach
+            // 走和单词**同一条**写入通道：prefs 里记够门槛，下次 writeFile 带出去
+            val key = K_WORD + code + "|" + phrase
+            if (p.getInt(key, 0) >= MIN_CONFIRM) return@forEach
+            p.edit().putInt(key, MIN_CONFIRM).apply()
+            added++
+        }
+        if (added > 0) {
+            dirty = true
+            Timber.i("[pdict] L3 整理：从 %d 对搭配里长出 %d 个新词", pairs.size, added)
+        }
+        return added
     }
 
     /** 攒够次数、值得让用户确认的纠错对。 */
@@ -353,17 +492,17 @@ object PersonalDictionary {
     }
 
     /** 拼音码：纯小写字母，2~12 位。 */
-    private fun normalizeCode(raw: String): String? {
+    private fun normalizeCode(raw: String, max: Int = MAX_CODE_LEN): String? {
         val c = raw.trim().lowercase()
-        if (c.length < 2 || c.length > MAX_CODE_LEN) return null
+        if (c.length < 2 || c.length > max) return null
         if (!c.all { it in 'a'..'z' || it == '\'' }) return null
         return c
     }
 
     /** 只要「词」：全汉字，2~12 字。数字、符号、英文串一律不要（那是噪音）。 */
-    private fun normalizeWord(raw: String): String? {
+    private fun normalizeWord(raw: String, max: Int = MAX_WORD_LEN): String? {
         val w = raw.trim()
-        if (w.length < 2 || w.length > MAX_WORD_LEN) return null
+        if (w.length < 2 || w.length > max) return null
         if (!w.all { it.code in 0x4E00..0x9FFF }) return null
         return w
     }

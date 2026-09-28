@@ -105,6 +105,15 @@ object CandidateReranker {
     @Volatile
     private var promote: Map<String, Double> = emptyMap()
 
+    /**
+     * 【M·L1】词搭配加权：`上一个上屏的词` 之后常跟哪些词。
+     *
+     * **不在这里自己算** —— 由 [BigramModel] 在每次上屏后灌好。
+     * `reorder()` 跑在候选列表事件里（主线程），所以这里只读一次引用。
+     */
+    private val bigram: Map<String, Double>
+        get() = BigramModel.current
+
     /** 词 → 屏蔽到什么时候（毫秒时间戳）。 */
     private val suppressed = HashMap<String, Long>()
 
@@ -258,8 +267,10 @@ object CandidateReranker {
 
         maybeRefresh()
         val scores = promote
-        if (scores.isEmpty()) return data
-
+        // 【M·L1】词搭配：`上一个上屏的词` 后面常跟哪些词。
+        // 和词频**同一条轴上加**，只抬不降 —— BigramModel 那边已经封了顶。
+        val pairs = bigram
+        if (scores.isEmpty() && pairs.isEmpty()) return data
         val now = System.currentTimeMillis()
         val scored = ArrayList<Pair<Int, Double>>(list.size)
         list.forEachIndexed { i, w ->
@@ -267,8 +278,11 @@ object CandidateReranker {
             if (t.isEmpty()) return@forEachIndexed
             val until = suppressed[t]
             if (until != null && until > now) return@forEachIndexed
-            val s = scores[t] ?: return@forEachIndexed
-            scored += i to s
+            val base = scores[t] ?: 0.0
+            val pair = pairs[t] ?: 0.0
+            // 两边都没分 → 保持引擎原序
+            if (base <= 0.0 && pair <= 0.0) return@forEachIndexed
+            scored += i to (base + pair)
         }
         if (scored.isEmpty()) return data
 

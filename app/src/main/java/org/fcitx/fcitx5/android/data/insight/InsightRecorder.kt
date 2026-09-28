@@ -471,11 +471,18 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                     )
                     if (level == InsightLevel.PLAIN) {
                         bumpWord(d, text.trim(), now, snapshotCandidateIndex)
+                        // 【M·L1】词搭配：同一个 session 里「上一个词 → 这个词」记一对，
+                        // 同时把「这个词」的后续词加权灌给候选重排器。
+                        // 只统计明文 —— L2/L3 既没法配对，也不该配。
+                        BigramModel.onCommitted(d, text.trim(), sid, now)
                         // 【D-2】喂给个人词库：「这次打的拼音码 → 上屏的词」。
                         // 只累积不写盘 —— 要攒够次数才够格进引擎词库。
                         PersonalDictionary.observe(
                             snapshotCode, text,
-                            offeredByEngine = snapshotOfferedByEngine
+                            offeredByEngine = snapshotOfferedByEngine,
+                            // 【M·L2】整句要用「你特意选中」当判据
+                            // （≥1 ⇒ 引擎的 N-best 没把它排在最前）
+                            candidateIndex = snapshotCandidateIndex
                         )
                         // 【D-3】上一次提交刚被删掉、这次出的是别的词 →
                         // 记一条纠错对。**只记，不自动改词库**：

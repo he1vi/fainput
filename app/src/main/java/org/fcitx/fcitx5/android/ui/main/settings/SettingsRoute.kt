@@ -28,6 +28,7 @@ import org.fcitx.fcitx5.android.ui.main.settings.addon.AddonConfigFragment
 import org.fcitx.fcitx5.android.ui.main.settings.addon.AddonListFragment
 import org.fcitx.fcitx5.android.ui.main.settings.behavior.AdvancedSettingsFragment
 import org.fcitx.fcitx5.android.ui.main.settings.behavior.CandidatesSettingsFragment
+import org.fcitx.fcitx5.android.ui.main.settings.behavior.ClipboardHistoryFragment
 import org.fcitx.fcitx5.android.ui.main.settings.behavior.ClipboardSettingsFragment
 import org.fcitx.fcitx5.android.ui.main.settings.behavior.KeyboardSettingsFragment
 import org.fcitx.fcitx5.android.ui.main.settings.behavior.SymbolSettingsFragment
@@ -94,6 +95,19 @@ sealed class SettingsRoute : Parcelable {
     /** 【fainput / S】拼音设置 —— 模糊音 / 常见错拼等 21 项（上游已实现，我们补入口） */
     @Serializable
     data object PinyinSettings : SettingsRoute()
+
+    /** 【fainput】剪贴板历史 —— 面板只给最近 2 小时，这里给**全部**（+ 跨条目搜索） */
+    @Serializable
+    data object ClipboardHistory : SettingsRoute()
+
+    /**
+     * 【fainput / L3】模型页。
+     *
+     * 把「后端 / 模型文件 / 能否载入」三件事**分开**显示 ——
+     * 因为它们是三个独立失败点，而且长得都不像失败。
+     */
+    @Serializable
+    data object LlmModel : SettingsRoute()
 
     @Serializable
     data object Developer : SettingsRoute()
@@ -224,6 +238,12 @@ sealed class SettingsRoute : Parcelable {
             }
             fragment<ClipboardSettingsFragment, Clipboard> {
                 label = ctx.getString(R.string.clipboard)
+            }
+            fragment<ClipboardHistoryFragment, ClipboardHistory> {
+                label = "剪贴板历史"
+            }
+            fragment<LlmModelFragment, LlmModel> {
+                label = "模型"
             }
             fragment<SymbolSettingsFragment, Symbol> {
                 label = ctx.getString(R.string.emoji_and_symbols)

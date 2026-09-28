@@ -22,6 +22,10 @@ android {
                 targets(
                     // jni
                     "native-lib",
+                    // 【fainput / L3】llama.cpp 的 JNI（后台整理层的推理后端）
+                    // 没有 llama.cpp 源码时它编为桩，但**目标必须存在** ——
+                    // targets() 里写了名字却建不出来，CMake 会直接报错。
+                    "native-llm",
                     // copy fcitx5 built-in addon libraries
                     "copy-fcitx5-modules",
                     // android specific modules
@@ -59,6 +63,11 @@ android {
     androidResources {
         @Suppress("UnstableApiUsage")
         generateLocaleConfig = true
+        // 【fainput / L3】模型是 .gguf —— **不要压缩**。
+        // ① GGUF 本身已经压过，再压一遍只会拖慢构建、甚至变大；
+        // ② 不压缩时 AssetFileDescriptor 才拿得到真实长度，
+        //    解压逻辑要靠它判断"这次安装要不要重来"。
+        noCompress += "gguf"
     }
 }
 

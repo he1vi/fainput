@@ -12,6 +12,7 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardEntry
+import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardRow
 import org.fcitx.fcitx5.android.data.theme.Theme
 import org.fcitx.fcitx5.android.utils.DeviceUtil
 import org.fcitx.fcitx5.android.utils.item
@@ -22,21 +23,22 @@ abstract class ClipboardAdapter(
     private val theme: Theme,
     private val entryRadius: Float,
     private val maskSensitive: Boolean
-) : PagingDataAdapter<ClipboardEntry, ClipboardAdapter.ViewHolder>(diffCallback) {
-
+) : PagingDataAdapter<ClipboardRow, ClipboardAdapter.ViewHolder>(diffCallback) {
     companion object {
-        private val diffCallback = object : DiffUtil.ItemCallback<ClipboardEntry>() {
+        private val diffCallback = object : DiffUtil.ItemCallback<ClipboardRow>() {
             override fun areItemsTheSame(
-                oldItem: ClipboardEntry,
-                newItem: ClipboardEntry
+                oldItem: ClipboardRow,
+                newItem: ClipboardRow
             ): Boolean {
                 return oldItem.id == newItem.id
             }
-
             override fun areContentsTheSame(
-                oldItem: ClipboardEntry,
-                newItem: ClipboardEntry
+                oldItem: ClipboardRow,
+                newItem: ClipboardRow
             ): Boolean {
+                // 【懒加载】原来这里比的是带全文的 ClipboardEntry ——
+                // 复制一本小说之后，每次列表更新都要**逐字符比 1 MB 的 String**。
+                // 现在比的是「预览 + 长度」，有界且便宜。
                 return oldItem == newItem
             }
         }
@@ -91,7 +93,9 @@ abstract class ClipboardAdapter(
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val entry = getItem(position) ?: return
         with(holder.entryUi) {
-            setEntry(excerptText(entry.text, entry.sensitive && maskSensitive), entry.pinned)
+            // 【懒加载】绑的只是 SQL 侧 `substr` 出来的预览（≤200 字）。
+            // 全文根本不在这条路径上 —— 复制一本小说，这里照样只搬 200 字。
+            setEntry(excerptText(entry.preview, entry.sensitive && maskSensitive), entry.pinned)
             root.setOnClickListener {
                 onPaste(entry)
             }
@@ -138,16 +142,12 @@ abstract class ClipboardAdapter(
         popupMenu = null
     }
 
-    abstract fun onPaste(entry: ClipboardEntry)
+    abstract fun onPaste(entry: ClipboardRow)
 
     abstract fun onPin(id: Int)
-
     abstract fun onUnpin(id: Int)
-
     abstract fun onEdit(id: Int)
-
-    abstract fun onShare(entry: ClipboardEntry)
-
+    abstract fun onShare(entry: ClipboardRow)
     abstract fun onDelete(id: Int)
 
 }

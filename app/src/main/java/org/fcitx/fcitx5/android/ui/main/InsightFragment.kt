@@ -19,6 +19,7 @@ import androidx.preference.PreferenceCategory
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.data.insight.DeviceState
+import org.fcitx.fcitx5.android.data.insight.BigramModel
 import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
@@ -139,6 +140,18 @@ class InsightFragment : PaddingPreferenceFragment() {
                     setup("编辑", "")
                     setOnPreferenceClickListener {
                         navigateWithAnim(SettingsRoute.PinyinCustomPhrase)
+                        true
+                    }
+                }.also { addPreference(it) }
+                // 【№5 合并开源词库】上游那一页其实是**完整的**：
+                //   列表 / 导入（.dict · .scel · .txt）/ 启停 / 删除 / 批量删
+                //   + `libscel2org5.so` 搜狗转换 + 离开页面时 `reloadDict()` 让引擎重载。
+                //   连 manifest 的 ACTION_VIEW 都配好了（文件管理器里"用 fainput 打开"就能导）。
+                //   缺的只有**入口** —— 原来它埋在「拼音 → 配置 → 词典管理」里。
+                Preference(context).apply {
+                    setup("导入词库", "")
+                    setOnPreferenceClickListener {
+                        navigateWithAnim(SettingsRoute.PinyinDict())
                         true
                     }
                 }.also { addPreference(it) }
@@ -491,6 +504,10 @@ class InsightFragment : PaddingPreferenceFragment() {
                         dao.wipeEvents()
                         dao.wipeWords()
                         dao.wipeSessions()
+                        // 【M·L1】搭配表 + 内存里那份续词加权一起清 ——
+                        // 否则清空之后，重排还会按旧搭配提前候选。
+                        dao.wipeBigrams()
+                        BigramModel.clear()
                     }
                 }
             }

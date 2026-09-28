@@ -82,6 +82,15 @@ class MainFragment : PaddingPreferenceFragment() {
                 ) {
                     navigateWithAnim(SettingsRoute.PinyinSettings)
                 }
+                // 【fainput / L3】模型页 —— 后端/模型文件/能否载入分开看，
+                // 否则"构建成功"和"真有 LLM"根本分不清。
+                addPreference(
+                    "模型",
+                    "",
+                    icon = R.drawable.ic_baseline_extension_24
+                ) {
+                    navigateWithAnim(SettingsRoute.LlmModel)
+                }
             }
             addCategory("Fcitx") {
                 addDestinationPreference(

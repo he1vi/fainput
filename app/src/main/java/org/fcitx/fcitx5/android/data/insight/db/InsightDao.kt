@@ -102,6 +102,55 @@ interface InsightDao {
     @Query("SELECT COUNT(*) FROM ${WordStatEntity.TABLE_NAME}")
     suspend fun wordCount(): Int
 
+    // ==================== 【M·L1】词搭配 ====================
+
+    /**
+     * 记一对词：`a` 后面跟了 `b`。
+     *
+     * 主键是 (a,b)，所以同一对靠 `ON CONFLICT` 累加，不产生重复行
+     * （和 [bumpWord] 同一个套路）。
+     */
+    @Query(
+        """
+        INSERT INTO ${WordBigramEntity.TABLE_NAME} (a, b, count, firstSeen, lastSeen)
+        VALUES (:a, :b, 1, :now, :now)
+        ON CONFLICT(a, b) DO UPDATE SET count = count + 1, lastSeen = :now
+        """
+    )
+    suspend fun bumpBigram(a: String, b: String, now: Long)
+
+    /** `a` 后面最常跟的词 —— 走 (a,b) 主键索引，微秒级。 */
+    @Query(
+        """
+        SELECT * FROM ${WordBigramEntity.TABLE_NAME}
+        WHERE a = :a
+        ORDER BY count DESC, lastSeen DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun nextWords(a: String, limit: Int): List<WordBigramEntity>
+
+    @Query("SELECT COUNT(*) FROM ${WordBigramEntity.TABLE_NAME}")
+    suspend fun bigramCount(): Int
+
+    @Query("DELETE FROM ${WordBigramEntity.TABLE_NAME}")
+    suspend fun wipeBigrams()
+
+    /**
+     * 【M·L3】反复共现的强搭配 —— 后台整理从这里长出新词。
+     *
+     * 只在充电 / 熄屏时被调用（`InsightMaintenance`），**绝不进打字路径**。
+     */
+    @Query(
+        """
+        SELECT * FROM ${WordBigramEntity.TABLE_NAME}
+        WHERE count >= :minCount
+        ORDER BY count DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun strongBigrams(minCount: Int, limit: Int): List<WordBigramEntity>
+
     /**
      * 【A1 热词加权】近 N 天每个词的提交次数 —— "你**现在**爱用什么"。
      *

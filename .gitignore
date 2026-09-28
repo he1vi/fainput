@@ -100,5 +100,10 @@ lint/tmp/
 # Android Profiling
 *.hprof
 
+# 【fainput / L3】llama.cpp 源码 —— CI 在构建前按 tag 拉进这个目录。
+# 绝不提交：源码 ~40MB，而 push 线路只有 ~38KB/s（推一次十几分钟）。
+# 本地要是克隆过它却没被忽略，push 脚本的 git add -A 会把 40MB 全带上。
+app/src/main/cpp/llama.cpp/
+
 ### Kotlin ###
 .kotlin/

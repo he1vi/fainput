@@ -110,6 +110,14 @@
             </intent-filter>
         </activity>
 
+        <!-- 【fainput 新功能】超长剪贴板文本的只读分块阅读器。
+             （和 ClipboardEditActivity 一样不进最近任务，避免泄漏内容标题） -->
+        <activity
+            android:name=".ui.main.ClipboardTextViewerActivity"
+            android:autoRemoveFromRecents="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/clipboard" />
         <activity
             android:name=".ui.main.ClipboardEditActivity"
             android:autoRemoveFromRecents="true"

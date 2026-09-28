@@ -173,6 +173,14 @@ object InsightMaintenance {
                 }.onFailure { Timber.d(it, "[insight] vacuum skipped") }
             }
 
+            // 【M·L3】后台整理：从你**反复打的词搭配**里长出新词。
+            // 这里**只标脏、不写盘** —— 写盘和引擎热重载交给 D-2 那条既有通道
+            // （`FcitxInputMethodService` 提交时调 publishIfNeeded，带 20 秒节流）。
+            // 放在归档之后：搭配表不受 90 天保留期影响，什么时候整理都可以。
+            runCatching { PersonalDictionary.organize(d) }
+                .onSuccess { if (it > 0) Timber.i("[insight] L3 整理：新词 %d 条", it) }
+                .onFailure { Timber.w(it, "[insight] L3 整理失败") }
+
             appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .putLong(KEY_LAST_RUN, now)

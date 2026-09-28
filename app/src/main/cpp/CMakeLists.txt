@@ -88,3 +88,68 @@ install(DIRECTORY "${PREBUILT_DIR}/chinese-addons-data/pinyinhelper" DESTINATION
 install(DIRECTORY "${PREBUILT_DIR}/libime/table" DESTINATION "${FCITX_INSTALL_PKGDATADIR}" COMPONENT prebuilt-assets)
 install(DIRECTORY "${PREBUILT_DIR}/libime/data/" DESTINATION "${FCITX_INSTALL_DATADIR}/libime" COMPONENT prebuilt-assets)
 install(DIRECTORY "${PREBUILT_DIR}/opencc/data/" DESTINATION "${FCITX_INSTALL_DATADIR}/opencc" COMPONENT prebuilt-assets)
+
+# ============================================================================
+# 【fainput / L3】llama.cpp —— 后台整理层的推理后端
+#
+# ## 源码不在仓库里
+#
+# CI 在构建前按**固定 tag** 拉下来（见 .github/workflows/build.yml）。
+# 为什么不 vendor：源码 ~40MB，而这条线路 push 只有 ~38KB/s。
+# 为什么锁 tag：llama.cpp 自己说 ABI **不稳定**（docs/build.md §Notes），
+#             而且它的 API 变动极快（`llama_load_model_from_file` 就被改名过）。
+#
+# ## 本地没有也能编
+#
+# 下面带 `EXISTS` 守卫 —— 缺源码时 `native-llm` 编成一堆桩函数，
+# App 其余功能完全不受影响。**不会出现"少一个目录整个项目编不了"。**
+#
+# ## 开关来自官方 docs/build.md 的 Android 段
+#
+#   GGML_NATIVE=OFF    别按宿主机 CPU 生成指令（交叉编译必须）
+#   GGML_OPENMP=OFF    NDK 用不了 OpenMP
+#   GGML_LLAMAFILE=OFF llamafile 不支持 Android
+#   LLAMA_OPENSSL=OFF  我们零网络，不需要 TLS
+# ============================================================================
+set(FAINPUT_LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp")
+if(EXISTS "${FAINPUT_LLAMA_DIR}/CMakeLists.txt")
+    set(FAINPUT_WITH_LLAMA ON)
+    # 只要库本身：tests / tools / examples / server / common / UI 全关。
+    # （作为 add_subdirectory 进来时 LLAMA_STANDALONE 本来就是 OFF，
+    #   这里再显式钉死一遍，免得上游改默认值。）
+    set(LLAMA_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_TOOLS     OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_SERVER    OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_COMMON    OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_APP       OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_UI        OFF CACHE BOOL "" FORCE)
+    set(LLAMA_USE_PREBUILT_UI OFF CACHE BOOL "" FORCE)
+    set(LLAMA_OPENSSL         OFF CACHE BOOL "" FORCE)
+    set(LLAMA_LLGUIDANCE      OFF CACHE BOOL "" FORCE)
+    set(LLAMA_CURL            OFF CACHE BOOL "" FORCE)
+    set(GGML_NATIVE           OFF CACHE BOOL "" FORCE)
+    set(GGML_OPENMP           OFF CACHE BOOL "" FORCE)
+    set(GGML_LLAMAFILE        OFF CACHE BOOL "" FORCE)
+    set(GGML_CPU_KLEIDIAI     OFF CACHE BOOL "" FORCE)
+    set(GGML_BUILD_TESTS      OFF CACHE BOOL "" FORCE)
+    set(GGML_BUILD_EXAMPLES   OFF CACHE BOOL "" FORCE)
+    # 静态链进 native-llm，不在 APK 里多塞几个 .so
+    set(FAINPUT_SHARED_BACKUP ${BUILD_SHARED_LIBS})
+    set(BUILD_SHARED_LIBS OFF)
+    # EXCLUDE_FROM_ALL：llama.cpp 自己的 install 规则不要进来
+    # （否则它的头文件和静态库会被打进 APK 的 assets）
+    add_subdirectory(${FAINPUT_LLAMA_DIR} "${CMAKE_CURRENT_BINARY_DIR}/llama.cpp" EXCLUDE_FROM_ALL)
+    set(BUILD_SHARED_LIBS ${FAINPUT_SHARED_BACKUP})
+    message(STATUS "fainput: llama.cpp 已启用 —— 后台整理层可用")
+else()
+    set(FAINPUT_WITH_LLAMA OFF)
+    message(STATUS "fainput: 没找到 llama.cpp 源码 —— native-llm 编为桩（功能降级）")
+endif()
+
+add_library(native-llm SHARED llm-jni.cpp)
+target_compile_definitions(native-llm PRIVATE "FAINPUT_WITH_LLAMA=$<BOOL:${FAINPUT_WITH_LLAMA}>")
+target_link_libraries(native-llm log)
+if(FAINPUT_WITH_LLAMA)
+    target_link_libraries(native-llm llama)
+endif()

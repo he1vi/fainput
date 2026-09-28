@@ -28,7 +28,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
-import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardEntry
+// 【fainput 新功能】面板列表现在换成轻量投影（不带全文）——
+// 原来那个带 `text` 全文的 ClipboardEntry 在这条路径上已经不需要了。
+import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardRow
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
 import org.fcitx.fcitx5.android.data.theme.ThemeManager
@@ -83,7 +85,10 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
     private val clipboardEntryRadius by ThemeManager.prefs.clipboardEntryRadius
 
     private val clipboardEntriesPager by lazy {
-        Pager(PagingConfig(pageSize = 16)) { ClipboardManager.allEntries() }
+        // 【fainput 新功能】面板只显示**最近 2 小时**（+ 置顶），
+        // 而且只取「预览 + 长度」—— 面板永远是"刚才拿的东西"，
+        // 也不会被一本小说的全文拖慢。（更早的条目仍在库里，设置的历史能看。）
+        Pager(PagingConfig(pageSize = 16)) { ClipboardManager.rows() }
     }
     private var adapterSubmitJob: Job? = null
 
@@ -105,15 +110,19 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                 AppUtil.launchClipboardEdit(context, id)
             }
 
-            override fun onShare(entry: ClipboardEntry) {
-                val target = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, entry.text)
+            override fun onShare(entry: ClipboardRow) {
+                // 【懒加载】列表里只有预览 —— **全文按 id 取一次，只在真的要分享时**。
+                service.lifecycleScope.launch {
+                    val full = ClipboardManager.textOf(entry.id) ?: entry.preview
+                    val target = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, full)
+                    }
+                    val chooser = Intent.createChooser(target, null).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    service.startActivity(chooser)
                 }
-                val chooser = Intent.createChooser(target, null).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                service.startActivity(chooser)
             }
 
             override fun onDelete(id: Int) {
@@ -122,10 +131,13 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                     showUndoSnackbar(id)
                 }
             }
-
-            override fun onPaste(entry: ClipboardEntry) {
-                service.commitText(entry.text)
-                if (clipboardReturnAfterPaste) windowManager.attachWindow(KeyboardWindow)
+            override fun onPaste(entry: ClipboardRow) {
+                // 【懒加载】同上：上屏那一刻才取全文。
+                service.lifecycleScope.launch {
+                    val full = ClipboardManager.textOf(entry.id) ?: entry.preview
+                    service.commitText(full)
+                    if (clipboardReturnAfterPaste) windowManager.attachWindow(KeyboardWindow)
+                }
             }
         }
     }

@@ -6,8 +6,11 @@
 package org.fcitx.fcitx5.android.ui.main
 
 import android.os.Bundle
+import android.text.InputType
 import android.view.View
+import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
+import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -19,12 +22,15 @@ import org.fcitx.fcitx5.android.data.insight.DeviceState
 import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
+import org.fcitx.fcitx5.android.data.insight.PersonalDictionary
 import org.fcitx.fcitx5.android.data.insight.db.LevelCount
 import org.fcitx.fcitx5.android.data.insight.db.StatsProjection
 import org.fcitx.fcitx5.android.data.insight.db.WordStatEntity
 import org.fcitx.fcitx5.android.ui.common.PaddingPreferenceFragment
+import org.fcitx.fcitx5.android.ui.main.settings.SettingsRoute
 import org.fcitx.fcitx5.android.utils.addCategory
 import org.fcitx.fcitx5.android.utils.addPreference
+import org.fcitx.fcitx5.android.utils.navigateWithAnim
 import org.fcitx.fcitx5.android.utils.setup
 import java.util.Calendar
 import java.util.Locale
@@ -75,10 +81,19 @@ class InsightFragment : PaddingPreferenceFragment() {
 
     // ---- 词表 ----
     private lateinit var catWords: PreferenceCategory
-
+    // ---- 【D-2 / D-3】词库 / 屏蔽 / 纠错 ----
+    private lateinit var catBlocked: PreferenceCategory
+    private lateinit var catCorrections: PreferenceCategory
+    private lateinit var catSearchResult: PreferenceCategory
     // ---- 操作 ----
     private lateinit var pRunNow: Preference
     private lateinit var pWipe: Preference
+
+    /**
+     * 跳引擎自带的「自定义短语」编辑器、以及删除词条后热重载，
+     * 都需要一条 fcitx 连接 —— 和上游那些编辑器用同一个 ViewModel。
+     */
+    private val viewModel: MainViewModel by activityViewModels()
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         preferenceScreen = preferenceManager.createPreferenceScreen(requireContext()).apply {
@@ -111,6 +126,43 @@ class InsightFragment : PaddingPreferenceFragment() {
 
             catWords = PreferenceCategory(context).apply { setTitle("最常用的词") }
             addPreference(catWords)
+
+            // ============ 【D-2 / D-3】词库 · 屏蔽 · 纠错 ============
+
+            // ① 我的词库
+            //    「搜索」在我们这儿做；「管理」跳引擎自带的编辑器 ——
+            //    上游那套编辑器其实是完整的（新增 / 修改 / 删除 / 停用），
+            //    唯一缺的就是**没有任何入口**。我们只补入口，不重复造一个。
+            addCategory("我的词库") {
+                Preference(context).apply {
+                    setup("搜索我的词库", "按拼音码或词，查你教给输入法的词")
+                    setOnPreferenceClickListener { askSearch(); true }
+                }.also { addPreference(it) }
+                Preference(context).apply {
+                    setup("管理我的词库", "新增 / 修改 / 删除 / 停用（引擎自带编辑器）")
+                    setOnPreferenceClickListener {
+                        navigateWithAnim(SettingsRoute.PinyinCustomPhrase)
+                        true
+                    }
+                }.also { addPreference(it) }
+            }
+
+            catSearchResult = PreferenceCategory(context).apply { setTitle("搜索结果") }
+            addPreference(catSearchResult)
+
+            // ② 被「暂时不要推荐」屏蔽的词
+            //    恢复入口按用户拍板放这里 —— **不放长按菜单**：
+            //    长按只做"立即动作"，恢复属于管理。
+            catBlocked = PreferenceCategory(context).apply { setTitle("暂时屏蔽的词") }
+            addPreference(catBlocked)
+
+            // ③ 纠错建议 —— 只提示，用户点了才写进词库
+            catCorrections = PreferenceCategory(context).apply { setTitle("纠错建议") }
+            addPreference(catCorrections)
+
+            // 初始渲染（读的都是 SharedPreferences，同步、不碰数据库）
+            renderBlocked()
+            renderCorrections()
 
             addCategory("操作") {
                 // 【fainput / D-1'】候选智能排序的总开关。
@@ -300,6 +352,152 @@ class InsightFragment : PaddingPreferenceFragment() {
         delta < 3600_000L -> "${delta / 60_000L} 分钟前"
         delta < 86_400_000L -> "${delta / 3600_000L} 小时前"
         else -> "${delta / 86_400_000L} 天前"
+    }
+
+    // ==================== 【D-2 / D-3】词库 · 屏蔽 · 纠错 ====================
+
+    /** 只读行：不可点，避免用户以为能按。 */
+    private fun plain(title: String, summary: String): Preference =
+        Preference(requireContext()).apply {
+            setup(title, summary)
+            isSelectable = false
+        }
+
+    // ---- 暂时屏蔽的词 ----
+
+    private fun renderBlocked() {
+        catBlocked.removeAll()
+        val list = CandidateReranker.suppressedWords()
+        if (list.isEmpty()) {
+            catBlocked.addPreference(
+                plain("没有屏蔽任何词", "在候选词上长按，可以「暂时不要推荐」，24 小时后自动恢复")
+            )
+            return
+        }
+        catBlocked.addPreference(Preference(requireContext()).apply {
+            setup("全部恢复", "把所有暂时屏蔽的词一次性放回来")
+            setOnPreferenceClickListener {
+                CandidateReranker.clearSuppressed()
+                renderBlocked()
+                true
+            }
+        })
+        val now = System.currentTimeMillis()
+        list.forEach { (word, until) ->
+            catBlocked.addPreference(Preference(requireContext()).apply {
+                val left = (until - now).coerceAtLeast(0L)
+                val h = left / 3600_000L
+                val m = (left % 3600_000L) / 60_000L
+                setup(word, "还有 ${h} 小时 ${m} 分自动恢复 · 点一下立即恢复")
+                setOnPreferenceClickListener {
+                    CandidateReranker.unsuppress(word)
+                    renderBlocked()
+                    true
+                }
+            })
+        }
+    }
+
+    // ---- 纠错建议 ----
+
+    private fun renderCorrections() {
+        catCorrections.removeAll()
+        val list = PersonalDictionary.pendingCorrections()
+        if (list.isEmpty()) {
+            catCorrections.addPreference(
+                plain(
+                    "暂时没有",
+                    "当你「打完又删、重打另一个词」时，这里会问你要不要记住这个改法"
+                )
+            )
+            return
+        }
+        list.take(20).forEach { c ->
+            catCorrections.addPreference(Preference(requireContext()).apply {
+                setup(
+                    "${c.code} → ${c.right}",
+                    "你打过「${c.wrong}」又改成「${c.right}」，共 ${c.count} 次"
+                )
+                setOnPreferenceClickListener { askCorrection(c); true }
+            })
+        }
+    }
+
+    private fun askCorrection(c: PersonalDictionary.Correction) {
+        AlertDialog.Builder(requireContext())
+            .setTitle("记住这个改法？")
+            .setMessage(
+                "以后打「${c.code}」时，把「${c.right}」放到候选最前面。\n\n" +
+                    "只影响你自己，不会上传任何东西。"
+            )
+            .setNeutralButton("取消", null)
+            .setNegativeButton("忽略") { _, _ ->
+                PersonalDictionary.dismissCorrection(c)
+                renderCorrections()
+            }
+            .setPositiveButton("记住") { _, _ ->
+                lifecycleScope.launch {
+                    runCatching {
+                        viewModel.fcitx.runOnReady { PersonalDictionary.acceptCorrection(this, c) }
+                    }
+                    renderCorrections()
+                }
+            }
+            .show()
+    }
+
+    // ---- 搜索词库 ----
+
+    private fun askSearch() {
+        val ctx = requireContext()
+        val input = EditText(ctx).apply {
+            hint = "拼音码或词"
+            setSingleLine()
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        AlertDialog.Builder(ctx)
+            .setTitle("搜索我的词库")
+            .setView(input)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("搜索") { _, _ -> renderSearch(input.text.toString()) }
+            .show()
+    }
+
+    private fun renderSearch(keyword: String) {
+        catSearchResult.removeAll()
+        val kw = keyword.trim()
+        catSearchResult.setTitle(if (kw.isEmpty()) "搜索结果（全部）" else "搜索结果「$kw」")
+        val hits = PersonalDictionary.search(kw)
+        if (hits.isEmpty()) {
+            catSearchResult.addPreference(
+                plain("没有匹配", "这里只列「你教给输入法的词」；引擎内置词典不在此列")
+            )
+            return
+        }
+        catSearchResult.addPreference(plain("共 ${hits.size} 条", "点任意一条可以删除它"))
+        hits.take(50).forEach { e ->
+            catSearchResult.addPreference(Preference(requireContext()).apply {
+                setup(e.value, "码 ${e.code} · 序号 ${e.order} · 点一下删除")
+                setOnPreferenceClickListener { confirmDeleteEntry(e); true }
+            })
+        }
+    }
+
+    private fun confirmDeleteEntry(e: PersonalDictionary.Entry) {
+        AlertDialog.Builder(requireContext())
+            .setTitle("删除「${e.value}」？")
+            .setMessage("会从你自己的词库里移除这一条（码 ${e.code}）。不会影响引擎内置词典。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("删除") { _, _ ->
+                lifecycleScope.launch {
+                    runCatching {
+                        viewModel.fcitx.runOnReady { PersonalDictionary.removeEntry(this, e) }
+                    }
+                    catSearchResult.removeAll()
+                    catSearchResult.addPreference(plain("已删除", "可以再搜一次看结果"))
+                }
+            }
+            .show()
     }
 
     // ==================== 操作 ====================

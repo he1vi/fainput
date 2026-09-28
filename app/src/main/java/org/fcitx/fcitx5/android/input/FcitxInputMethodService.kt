@@ -443,8 +443,13 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
         // 【fainput / D-2】把够格的词写进引擎词库，并让它**立刻**重读
         // （reloadPinyinCustomPhrase → loadCustomPhrase）。
         // 内部叠了 20 秒节流，且只在「刚够门槛」时才真写盘 —— 不会打断打字。
+        //
+        // ⚠️ `fcitx` 是 FcitxConnection，**不是** FcitxAPI ——
+        //    必须先 runOnReady 拿到 API 才能调 addon 子配置接口。
         lifecycleScope.launch {
-            runCatching { PersonalDictionary.publishIfNeeded(fcitx) }
+            runCatching {
+                fcitx.runOnReady { PersonalDictionary.publishIfNeeded(this) }
+            }
         }
         // when composing text equals commit content, finish composing text as-is
         if (composing.isNotEmpty() && composingText.toString() == text) {

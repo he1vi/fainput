@@ -108,6 +108,33 @@ object CandidateReranker {
     /** 词 → 屏蔽到什么时候（毫秒时间戳）。 */
     private val suppressed = HashMap<String, Long>()
 
+    /**
+     * **屏蔽必须持久化**。
+     *
+     * 说了"24 小时"，如果进程一重启就失效，那是骗人 ——
+     * 输入法进程被系统杀是很常见的事。
+     */
+    @Volatile
+    private var suppressedLoaded = false
+
+    private const val K_SUPPRESS = "s|"
+
+    /** 第一次访问时才从 SharedPreferences 读（打字路径上不能有 IO）。 */
+    private fun ensureSuppressedLoaded() {
+        if (suppressedLoaded) return
+        // ⚠️ 必须先确认 prefs 就绪**再**置位。
+        //    否则 init() 之前被调一次，就会把 loaded 打成 true，
+        //    之后真正的屏蔽记录永远读不进来 —— 而且不会有任何报错。
+        val p = prefs ?: return
+        suppressedLoaded = true
+        val now = System.currentTimeMillis()
+        p.all.forEach { (k, v) ->
+            if (!k.startsWith(K_SUPPRESS)) return@forEach
+            val until = v as? Long ?: return@forEach
+            if (until > now) suppressed[k.removePrefix(K_SUPPRESS)] = until
+        }
+    }
+
     @Volatile
     private var lastLoadAt: Long = 0L
 
@@ -167,18 +194,53 @@ object CandidateReranker {
     fun suppress(word: String) {
         val w = word.trim()
         if (w.isEmpty()) return
-        suppressed[w] = System.currentTimeMillis() + SUPPRESS_MS
+        val until = System.currentTimeMillis() + SUPPRESS_MS
+        suppressed[w] = until
+        prefs?.edit()?.putLong(K_SUPPRESS + w, until)?.apply()
         perm = null
-        Timber.i("[rerank] suppressed until +24h: len=%d", w.length)
+        Timber.i("[rerank] suppressed (len=%d)", w.length)
+    }
+
+    /**
+     * 恢复推荐。
+     *
+     * **由设置页调用，不在长按菜单里**（用户拍板：长按只做"立即动作"，
+     * 恢复属于管理，归设置页）。
+     */
+    fun unsuppress(word: String) {
+        val w = word.trim()
+        if (w.isEmpty()) return
+        suppressed.remove(w)
+        prefs?.edit()?.remove(K_SUPPRESS + w)?.apply()
+        perm = null
+    }
+
+    /** 全部恢复。 */
+    fun clearSuppressed() {
+        suppressed.clear()
+        val p = prefs ?: return
+        val e = p.edit()
+        p.all.keys.filter { it.startsWith(K_SUPPRESS) }.forEach { e.remove(it) }
+        e.apply()
     }
 
     fun isSuppressed(word: String): Boolean {
-        val until = suppressed[word.trim()] ?: return false
+        ensureSuppressedLoaded()
+        val w = word.trim()
+        val until = suppressed[w] ?: return false
         if (until <= System.currentTimeMillis()) {
-            suppressed.remove(word.trim())
+            unsuppress(w)
             return false
         }
         return true
+    }
+
+    /** 当前被屏蔽的词 + 解禁时刻（给设置页展示）。顺带清掉已过期的。 */
+    fun suppressedWords(): List<Pair<String, Long>> {
+        ensureSuppressedLoaded()
+        val now = System.currentTimeMillis()
+        suppressed.entries.removeAll { it.value <= now }
+        return suppressed.entries.sortedBy { it.value }.map { it.key to it.value }
     }
 
     // ==================== 核心：重排 ====================
@@ -188,6 +250,7 @@ object CandidateReranker {
      * 候选总数、每个词的内容都不变，只有顺序变。
      */
     fun reorder(data: FcitxEvent.CandidateListEvent.Data): FcitxEvent.CandidateListEvent.Data {
+        ensureSuppressedLoaded()
         perm = null
         val list = data.candidates
         if (!enabled || list.size < 3) return data
@@ -254,9 +317,18 @@ object CandidateReranker {
         if (now - lastLoadAt < REFRESH_INTERVAL_MS) return
         lastLoadAt = now
         if (!InsightRecorder.isReady) return
+        val dao = InsightRecorder.daoOrNull ?: return
         InsightRecorder.launch {
             runCatching {
                 val rows = InsightRecorder.topWords(TOP_LIMIT)
+                // 【A1 热词加权】近 7 天每个词出现多少次。
+                // 为什么必须单独算：`word_stat` 只有累计值，分不出
+                // 「昨天打了 5 次」和「半年前打了 5 次」。
+                // 数据来源是 input_event（保留 90 天），所以 7 天窗口永远都在。
+                val recent = HashMap<String, Int>(256)
+                dao.recentWords(System.currentTimeMillis() - TAU_MS, TOP_LIMIT)
+                    .forEach { recent[it.word] = it.count }
+
                 val t = System.currentTimeMillis()
                 val map = HashMap<String, Double>(rows.size)
                 rows.forEach { w ->
@@ -264,11 +336,19 @@ object CandidateReranker {
                     val text = w.word.trim()
                     // 只要词，不要句子。长度 1 的不进（直通提交的噪音）。
                     if (text.length < 2 || text.length > 12) return@forEach
+                    // 【A1 + A2】近 7 天的使用**全额计入**；
+                    // 更早的使用按时间衰减打折。
+                    // 注意这是"只抬不降"的：热词只会更靠前，冷词不会被压成负数。
+                    val hot = (recent[text] ?: 0).toDouble()
+                    val cold = (w.count - hot).coerceAtLeast(0.0)
                     val recency = exp(-(t - w.lastSeen).toDouble() / TAU_MS)
-                    map[text] = w.count * recency
+                    map[text] = hot + cold * recency
                 }
                 promote = map
-                Timber.i("[rerank] loaded %d words from %d rows", map.size, rows.size)
+                Timber.i(
+                    "[rerank] loaded %d words (hot=%d) from %d rows",
+                    map.size, recent.size, rows.size
+                )
             }.onFailure {
                 Timber.w(it, "[rerank] load failed")
             }

@@ -60,6 +60,23 @@ object PersonalDictionary {
     /** 同一个「码 → 词」见到几次才够格进词库。 */
     private const val MIN_CONFIRM = 3
 
+    /**
+     * **自动学习**路径的拼音码最小长度。
+     *
+     * 为什么必须有这道闸（来自 `WindInput` 记录的真实事故）：
+     * `customphrase` 的「序号」是一条**绝对优先级轴** ——
+     * 写 1 就等于引擎自己的「置顶」，会跨过权重轴把别的词全压下去。
+     * 而短码（`de` / `shi` / `le`）对应的恰恰是**权重极高**的常用词，
+     * 一旦被顶掉，用户会觉得"输入法坏了"。
+     *
+     * 文档原话：旧实现因为"用过就赢"的布尔闸门，
+     * **只用过一次的「的样子」把权重 1.54e7 的「的」挤了下去**。
+     *
+     * ⇒ 短码一律交给 D-1' 的**位置提升**（有界、可预测），不走绝对轴。
+     * 长码（≥4）才可能是"引擎真的给不出"的词（名字、术语、新词）。
+     */
+    private const val MIN_AUTO_CODE_LEN = 4
+
     /** 纠错对门槛（只用来决定"值不值得提示"，不自动写）。 */
     private const val MIN_CORRECTION = 2
 
@@ -97,10 +114,20 @@ object PersonalDictionary {
      * 【D-2】一次正常的「拼音码 → 上屏词」。
      *
      * 由 `InsightRecorder` 在每次提交时调用（它知道 preedit 与上屏文本）。
+     *
+     * @param offeredByEngine 引擎**这一次**有没有把这个词作为候选给出。
+     *        给过 → 我们不写（不能走绝对优先级轴）。
      */
-    fun observe(code: String, word: String) {
+    fun observe(code: String, word: String, offeredByEngine: Boolean) {
         val c = normalizeCode(code) ?: return
         val w = normalizeWord(word) ?: return
+        // ① 引擎自己能给出的词，**绝不写进 customphrase**。
+        //    customphrase 的序号是绝对优先级轴，我们无从知道引擎内部权重尺度，
+        //    写 order=1 就是"布尔闸门" —— 那正是 WindInput 记录的事故。
+        //    要"提前"就交给 D-1' 的位置提升：有界、可预测、不动别人的权重。
+        if (offeredByEngine) return
+        // ② 短码一律不走绝对轴（de/shi/le 这些码对应的都是极高权重常用词）
+        if (c.length < MIN_AUTO_CODE_LEN) return
         bump(K_WORD + c + "|" + w, MIN_CONFIRM)
     }
 
@@ -152,7 +179,13 @@ object PersonalDictionary {
      */
     suspend fun publishIfNeeded(api: FcitxAPI, force: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (!force) {
+        // 每个进程**第一次**调用强制跑一遍：
+        // ① 自愈 —— 上游的「管理自定义短语」编辑器保存时会整文件重写，
+        //    有可能把我们追加的行冲掉；这里会把它们补回来。
+        // ② 保证重启后内存记录和文件一致。
+        // （`lastWriteAt == 0L` 就是"本进程还没写过"，不用额外加字段。）
+        val first = lastWriteAt == 0L
+        if (!force && !first) {
             if (!dirty) return
             if (now - lastWriteAt < MIN_WRITE_INTERVAL_MS) return
         }

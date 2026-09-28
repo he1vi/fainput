@@ -405,6 +405,9 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         val snapshotTap = eventTap.toMap()
         // 【D-2】这次用到的拼音码也要在重置前快照下来
         val snapshotCode = preeditText
+        // 【D-2】引擎**这次有没有给出这个词** —— 决定要不要写进词库。
+        // 必须在这里快照：下面 resetCommitState() 会把 lastCandidates 清空。
+        val snapshotOfferedByEngine = lastCandidates.contains(text)
         // 【D-3】取出「刚被撤销的那次提交」，取完就清 —— 只用一次
         val undoneCodeSnapshot = undoneCode
         val undoneWordSnapshot = undoneWord
@@ -470,7 +473,10 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                         bumpWord(d, text.trim(), now, snapshotCandidateIndex)
                         // 【D-2】喂给个人词库：「这次打的拼音码 → 上屏的词」。
                         // 只累积不写盘 —— 要攒够次数才够格进引擎词库。
-                        PersonalDictionary.observe(snapshotCode, text)
+                        PersonalDictionary.observe(
+                            snapshotCode, text,
+                            offeredByEngine = snapshotOfferedByEngine
+                        )
                         // 【D-3】上一次提交刚被删掉、这次出的是别的词 →
                         // 记一条纠错对。**只记，不自动改词库**：
                         // 由用户在界面上决定要不要采纳（用户原话：提示用户要不要纠错）。

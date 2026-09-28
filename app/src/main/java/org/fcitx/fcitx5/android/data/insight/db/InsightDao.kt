@@ -102,6 +102,24 @@ interface InsightDao {
     @Query("SELECT COUNT(*) FROM ${WordStatEntity.TABLE_NAME}")
     suspend fun wordCount(): Int
 
+    /**
+     * 【A1 热词加权】近 N 天每个词的提交次数 —— "你**现在**爱用什么"。
+     *
+     * 为什么不从 `word_stat` 算：那张表只有 `count / firstSeen / lastSeen`，
+     * **没有按天的时间序列**，算不出"近 7 天频率"。
+     * 而 `input_event` 有完整的 `timestamp + text`，且**本身保留 90 天**
+     * —— 7 天窗口永远在里面。**不用建新表、不用迁移。**
+     */
+    @Query(
+        """SELECT text AS word, COUNT(*) AS count
+           FROM ${InputEventEntity.TABLE_NAME}
+           WHERE level = 1 AND text IS NOT NULL AND timestamp >= :since
+           GROUP BY text
+           ORDER BY count DESC
+           LIMIT :limit"""
+    )
+    suspend fun recentWords(since: Long, limit: Int): List<WordCount>
+
     // ==================== 存储分层：归档 ====================
     //
     // 背景：input_event 每年涨 ~44 MB，五年 220 MB。

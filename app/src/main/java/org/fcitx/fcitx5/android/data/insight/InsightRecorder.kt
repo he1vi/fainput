@@ -94,6 +94,18 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
     private var lastPageFirstCandidate: String? = null
     private var lastCommitAt = 0L
 
+    /**
+     * 当前这一页候选词。
+     *
+     * 用途：提交时反查「用户选的是第几个候选」。
+     * `PagedCandidateEvent.cursorIndex` 是**高亮**索引，用户用空格/数字键选词时
+     * 根本没有高亮，恒为 -1 —— 所以只能靠提交文本去列表里找。
+     */
+    private var lastCandidates: List<String> = emptyList()
+
+    /** 本提交周期内各事件出现的次数，用来诊断采集盲区。 */
+    private val eventTap = HashMap<String, Int>()
+
     // ==================== 生命周期 ====================
 
     fun init(context: Context) {
@@ -149,6 +161,20 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         candidateIndex = -1
         pageTurns = 0
         lastPageFirstCandidate = null
+        lastCandidates = emptyList()
+        eventTap.clear()
+    }
+
+    /**
+     * 事件探针：本提交周期内各类事件出现了几次。
+     *
+     * 为什么需要它：实测 `keyCount` 大量为 0，说明有些事件根本没到我们手上。
+     * **与其猜，不如把"到底来了哪些事件"记下来。**
+     * 每次落库时打一行 logcat（tag `fainput`），打字后
+     * `logcat -s fainput` 就能看清采集盲区在哪。
+     */
+    private fun tap(name: String) {
+        eventTap[name] = (eventTap[name] ?: 0) + 1
     }
 
     // ==================== 事件入口 ====================
@@ -164,20 +190,49 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
             is FcitxEvent.KeyEvent -> {
                 // 只算按下，不然一次按键算两遍
                 if (!event.data.up) keyCount++
+                tap(if (event.data.states.virtual) "Key:virtual" else "Key:physical")
+            }
+
+            // ---- 预编辑（拼音串）----
+            // ★ 关键修正：Android 输入法把预编辑显示在**自己的候选栏**上，
+            //   所以 fcitx5 走的是 InputPanelEvent，而不是 ClientPreeditEvent
+            //   （后者只在"客户端自己渲染预编辑"时才发）。
+            //   实测数据里 preeditLength 全是 0，就是漏了这一路。
+            is FcitxEvent.InputPanelEvent -> {
+                val len = event.data.preedit.strings.sumOf { it.length }
+                // 取本周期内的**最大值**：提交之后 fcitx5 会再发一个空 preedit，
+                // 直接赋值会把刚打出来的码长冲掉。
+                if (len > preeditLength) preeditLength = len
+                tap("InputPanel")
             }
 
             is FcitxEvent.ClientPreeditEvent -> {
-                // FormattedText.strings 是分段文本，拼起来就是完整预编辑串
-                preeditLength = event.data.strings.sumOf { it.length }
+                val len = event.data.strings.sumOf { it.length }
+                if (len > preeditLength) preeditLength = len
+                tap("ClientPreedit")
             }
 
+            // ---- 候选 ----
             is FcitxEvent.CandidateListEvent -> {
-                candidateCount = event.data.total
+                // 只在 PagedCandidate 没来过时兜底。
+                // ★ 用 candidates.size 而不是 total ——
+                //   total 是"引擎能提供的候选总数"（实测「你好」= 606），
+                //   那是真实数字但对"好不好选"毫无意义。
+                if (candidateCount == 0 && event.data.candidates.isNotEmpty()) {
+                    candidateCount = event.data.candidates.size
+                }
+                tap("CandidateList")
             }
 
             is FcitxEvent.PagedCandidateEvent -> {
                 val d = event.data
-                if (d.candidates.isNotEmpty()) candidateCount = d.candidates.size
+                if (d.candidates.isNotEmpty()) {
+                    candidateCount = d.candidates.size
+                    lastCandidates = d.candidates.map { it.text }
+                }
+                // cursorIndex 是**高亮**索引。用户用空格/数字键选词时根本没有高亮，
+                // 所以它恒为 -1 —— 实测数据全 -1 就是这个原因。
+                // 真正"选了第几个"要在提交时用文本反查（见 record()）。
                 candidateIndex = d.cursorIndex
                 // 用「首页候选词是否变化」判断真的翻页了，避免重复计数
                 val first = d.candidates.firstOrNull()?.text
@@ -186,7 +241,12 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                     // hasPrev=true 表示当前不在第一页 —— 也就是用户往后翻过
                     if (d.hasPrev) pageTurns++
                 }
+                tap("PagedCandidate")
             }
+
+            is FcitxEvent.DeleteSurroundingEvent -> tap("DeleteSurrounding")
+            is FcitxEvent.IMChangeEvent -> tap("IMChange")
+            is FcitxEvent.StatusAreaEvent -> tap("StatusArea")
 
             is FcitxEvent.CommitStringEvent -> {
                 record(event.data.text)
@@ -206,8 +266,14 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         val snapshotPreedit = preeditLength
         val snapshotKeys = keyCount
         val snapshotCandidateCount = candidateCount
-        val snapshotCandidateIndex = candidateIndex
         val snapshotPageTurns = pageTurns
+        // 候选序号：cursorIndex 只在"有高亮"时才有值，用空格/数字键选词时恒为 -1。
+        // 所以拿提交的文本去当前候选页里反查 —— 这才是真正的"选了第几个"。
+        //   0 = 首选命中；-1 = 找不到（整句提交 / 标点 / 英文等）
+        val snapshotCandidateIndex = candidateIndex.takeIf { it >= 0 }
+            ?: lastCandidates.indexOf(text).takeIf { it >= 0 }
+            ?: -1
+        val snapshotTap = eventTap.toMap()
         val snapshotPkg = pendingPkg
         val snapshotClass = pendingInputClass
         val snapshotVariation = pendingInputVariation
@@ -255,6 +321,14 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                             keyCount = snapshotKeys,
                             durationMs = duration,
                         )
+                    )
+                    // 诊断日志（tag=fainput）：看清本次提交到底收到了哪些事件。
+                    // **故意不打 text 本身** —— 日志也是数据，不该泄露内容。
+                    Timber.i(
+                        "[insight] level=%d len=%d preedit=%d keys=%d candIdx=%d candN=%d pages=%d dur=%dms tap=%s",
+                        level.code, text.length, snapshotPreedit, snapshotKeys,
+                        snapshotCandidateIndex, snapshotCandidateCount,
+                        snapshotPageTurns, duration, snapshotTap
                     )
                     if (level == InsightLevel.PLAIN) {
                         bumpWord(d, text.trim(), now, snapshotCandidateIndex)

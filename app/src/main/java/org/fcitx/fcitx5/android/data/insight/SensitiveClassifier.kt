@@ -36,25 +36,42 @@ object SensitiveClassifier {
      */
     fun isSensitiveEditor(editor: EditorInfo?): Boolean {
         if (editor == null) return true
+
+        // 1. inputType 里的密码变体 —— 最标准、最可靠
         if (isPasswordInputType(editor.inputType)) return true
 
-        // 系统在密码框上会设这个 flag（Android 8+），是比 inputType 更可靠的信号
+        // 2. 系统在密码框上会设这个 flag（Android 8+），比 inputType 更可靠
         if (editor.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0) return true
 
-        // autofillHints 是 App 主动声明的"这个框是什么"
-        editor.autofillHints?.forEach { hint ->
-            val h = hint.lowercase()
-            if (h.contains("password") ||
-                h.contains("credit") ||
-                h.contains("card") ||
-                h.contains("cvc") ||
-                h.contains("otp") ||
-                h.contains("sms")
-            ) {
-                return true
-            }
-        }
+        // 3. 用户手动标记的"永不记录"应用（银行 / 支付 / 密码管理器）
+        //
+        //    为什么不用 EditorInfo.autofillHints：
+        //    它是 @hide 字段，公开 SDK 里访问不到（编译期 Unresolved reference）。
+        //    所以改用"应用级黑名单"来补这个缺口 —— 粒度更粗，但用户可控，
+        //    且符合本项目"宁可过度保护"的原则。
+        val pkg = editor.packageName ?: return false
+        if (blockedPackages().contains(pkg)) return true
+
         return false
+    }
+
+    /**
+     * 用户标记为「永不记录」的包名集合。
+     *
+     * 存储在应用私有 SharedPreferences 的 `blocked_packages` 键里，
+     * **每行一个包名**（方便以后用多行文本框编辑，也方便导出）。
+     *
+     * 默认空 —— 不预置任何第三方包名（那既不准也不可维护）。
+     * C 阶段的界面会提供一个开关让用户自己勾。
+     */
+    private fun blockedPackages(): Set<String> {
+        val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_BLOCKED_PACKAGES, null) ?: return emptySet()
+        return raw.split('\n')
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
     }
 
     private fun isPasswordInputType(inputType: Int): Boolean {
@@ -108,6 +125,7 @@ object SensitiveClassifier {
 
     private const val PREFS_NAME = "fainput_insight"
     private const val KEY_SALT = "hash_salt"
+    private const val KEY_BLOCKED_PACKAGES = "blocked_packages"
 
     @Volatile
     private var cachedSalt: ByteArray? = null

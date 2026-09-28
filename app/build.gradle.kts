@@ -42,13 +42,17 @@ android {
         release {
             resValue("mipmap", "app_icon", "@mipmap/ic_launcher")
             resValue("mipmap", "app_icon_round", "@mipmap/ic_launcher_round")
-            resValue("string", "app_name", "@string/app_name_release")
+            // fainput: 字面量而非 @string/app_name_release
+            // 原因: app_name_release 在 8 个 locale 里都有定义（中文是「小企鹅输入法」），
+            //       引用式会走资源解析 → 被 locale 覆盖。字面量没有 locale 变体，永远生效。
+            resValue("string", "app_name", "fainPut")
             proguardFile("proguard-rules.pro")
         }
         debug {
             resValue("mipmap", "app_icon", "@mipmap/ic_launcher_debug")
             resValue("mipmap", "app_icon_round", "@mipmap/ic_launcher_round_debug")
-            resValue("string", "app_name", "@string/app_name_debug")
+            // fainput: 同上，debug 也用同一个名字（同包名，debug/release 不会共存）
+            resValue("string", "app_name", "fainPut")
         }
     }
 

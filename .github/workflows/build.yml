@@ -62,6 +62,23 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Install stable debug keystore
+        # ★ 关键：AGP 发现 ~/.android/debug.keystore 不存在时会**随机生成**一个。
+        #   后果是每次云端构建的签名都不同 → 覆盖安装被拒
+        #   (INSTALL_FAILED_UPDATE_INCOMPATIBLE) → 必须先卸载 → 应用数据全丢。
+        #   对一个"靠数据积累"的输入法来说这是致命的。
+        #
+        #   这里用仓库里固定的 signing/debug.keystore 覆盖它。
+        #   alias=androiddebugkey / storepass=android 正是 AGP debug 签名的默认值，
+        #   所以不需要改任何 gradle 配置。
+        run: |
+          mkdir -p "$HOME/.android"
+          cp signing/debug.keystore "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+          echo "--- 已安装的签名证书 ---"
+          keytool -list -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey
+
       - name: Build Debug APK
         run: |
           chmod +x gradlew

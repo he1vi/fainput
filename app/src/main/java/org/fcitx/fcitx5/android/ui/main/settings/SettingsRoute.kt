@@ -104,14 +104,6 @@ sealed class SettingsRoute : Parcelable {
     @Serializable
     data object Transfer : SettingsRoute()
 
-    /** 【fainput / F】翻译 —— 本地模型，离线 */
-    @Serializable
-    data object Translate : SettingsRoute()
-
-    /** 【fainput / F】颜文字 —— 点一下进剪贴板（键盘的剪贴板面板里就能插） */
-    @Serializable
-    data object Kaomoji : SettingsRoute()
-
     /**
      * 【fainput / L3】模型页。
      *
@@ -259,12 +251,6 @@ sealed class SettingsRoute : Parcelable {
             }
             fragment<TransferFragment, Transfer> {
                 label = "备份"
-            }
-            fragment<TranslateFragment, Translate> {
-                label = "翻译"
-            }
-            fragment<KaomojiFragment, Kaomoji> {
-                label = "颜文字"
             }
             fragment<SymbolSettingsFragment, Symbol> {
                 label = ctx.getString(R.string.emoji_and_symbols)

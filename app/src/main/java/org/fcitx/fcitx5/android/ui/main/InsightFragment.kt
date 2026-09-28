@@ -234,21 +234,9 @@ class InsightFragment : PaddingPreferenceFragment() {
                     }
                 }.also { addPreference(it) }
 
-                // 【fainput / F】输入方式：翻译（本地模型，离线）· 颜文字
-                Preference(context).apply {
-                    setup("翻译", "")
-                    setOnPreferenceClickListener {
-                        navigateWithAnim(SettingsRoute.Translate)
-                        true
-                    }
-                }.also { addPreference(it) }
-                Preference(context).apply {
-                    setup("颜文字", "")
-                    setOnPreferenceClickListener {
-                        navigateWithAnim(SettingsRoute.Kaomoji)
-                        true
-                    }
-                }.also { addPreference(it) }
+                // 【fainput / F】**翻译 / 颜文字已作废**（用户 2026-09-29：「完全没用」）。
+                //   F 阶段真正落地的是**语音**（复用系统语音，零新增权限）。
+                //   那两个页面在 git 历史里能找到（删掉不心疼）。
             }
         }
     }

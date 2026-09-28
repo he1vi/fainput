@@ -113,7 +113,7 @@ class TransferFragment : PaddingPreferenceFragment() {
                 val events = c["input_event"] ?: 0
                 val words = c["word_stat"] ?: 0
                 val pairs = c["word_bigram"] ?: 0
-                "$events 事件 · $words 词 · $pairs 搭配"
+                String.format(Locale.US, "%,d 事件 · %,d 词 · %,d 搭配", events, words, pairs)
             }
         }
     }
@@ -146,7 +146,7 @@ class TransferFragment : PaddingPreferenceFragment() {
         render()
         lifecycleScope.launch {
             last = TransferPack.export(uri, pass)
-                .fold({ "已导出 ${it.rows} 行" }, { "❌ ${it.message}" })
+                .fold({ String.format(Locale.US, "已导出 %,d 行", it.rows) }, { "❌ ${it.message}" })
             render()
         }
     }
@@ -156,7 +156,7 @@ class TransferFragment : PaddingPreferenceFragment() {
         render()
         lifecycleScope.launch {
             last = TransferPack.import(uri, pass)
-                .fold({ "已导入 ${it.rows} 行" }, { "❌ ${it.message}" })
+                .fold({ String.format(Locale.US, "已导入 %,d 行", it.rows) }, { "❌ ${it.message}" })
             render()
         }
     }

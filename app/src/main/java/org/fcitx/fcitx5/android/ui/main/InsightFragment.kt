@@ -266,7 +266,7 @@ class InsightFragment : PaddingPreferenceFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         val dao = InsightRecorder.daoOrNull ?: run {
-            catWords.addPreference("数据层还没就绪", "请先启用一次输入法")
+            catWords.addPreference("暂无", "")
             return
         }
         val dayStart = todayStart()
@@ -293,16 +293,19 @@ class InsightFragment : PaddingPreferenceFragment() {
     // ==================== 渲染 ====================
 
     private fun renderToday(s: StatsProjection) {
-        pTodayChars.summary = "${s.chars} 字"
-        pTodayEvents.summary = "${s.events} 次"
+        pTodayChars.summary = String.format(Locale.US, "%,d 字", s.chars)
+        pTodayEvents.summary = String.format(Locale.US, "%,d 次", s.events)
 
         pCodeLen.summary = if (s.chars > 0) {
-            String.format(Locale.US, "%.2f 字母/字  (共 %d 字母)", s.preeditChars.toDouble() / s.chars, s.preeditChars)
+            String.format(
+                Locale.US, "%.2f 字母/字  (共 %,d 字母)",
+                s.preeditChars.toDouble() / s.chars, s.preeditChars
+            )
         } else "—"
 
         pFirstHit.summary = if (s.candidateSamples > 0) {
             String.format(
-                Locale.US, "%.1f%%  (%d / %d)",
+                Locale.US, "%.1f%%  (%,d / %,d)",
                 100.0 * s.candidateHits / s.candidateSamples, s.candidateHits, s.candidateSamples
             )
         } else "暂无"
@@ -312,13 +315,16 @@ class InsightFragment : PaddingPreferenceFragment() {
         } else "—"
 
         pPaged.summary = if (s.events > 0) {
-            String.format(Locale.US, "%.1f%%  (%d / %d)", 100.0 * s.pageTurns / s.events, s.pageTurns, s.events)
+            String.format(
+                Locale.US, "%.1f%%  (%,d / %,d)",
+                100.0 * s.pageTurns / s.events, s.pageTurns, s.events
+            )
         } else "—"
     }
 
     private fun renderTotal(s: StatsProjection) {
-        pTotalChars.summary = "${s.chars} 字"
-        pTotalEvents.summary = "${s.events} 次"
+        pTotalChars.summary = String.format(Locale.US, "%,d 字", s.chars)
+        pTotalEvents.summary = String.format(Locale.US, "%,d 次", s.events)
     }
 
     private fun renderLevels(list: List<LevelCount>) {
@@ -331,16 +337,16 @@ class InsightFragment : PaddingPreferenceFragment() {
         val hashed = by[2] ?: 0
         val only = by[3] ?: 0
         pLevels.summary = buildString {
-            append("明文 $plain 条")
-            if (hashed > 0) append(" · 只存哈希 $hashed 条")
-            if (only > 0) append(" · 只记计数 $only 条")
+            append(String.format(Locale.US, "明文 %,d 条", plain))
+            if (hashed > 0) append(String.format(Locale.US, " · 只存哈希 %,d 条", hashed))
+            if (only > 0) append(String.format(Locale.US, " · 只记计数 %,d 条", only))
         }
     }
 
     private fun renderWords(words: List<WordStatEntity>) {
         catWords.removeAll()
         if (words.isEmpty()) {
-            catWords.addPreference("还没有数据", "打几个字就会出现在这里")
+            catWords.addPreference("暂无", "")
             return
         }
         words.forEach { w ->
@@ -393,8 +399,8 @@ class InsightFragment : PaddingPreferenceFragment() {
         pLastRun.summary = if (last == 0L) "从未" else ago(now - last)
 
         runCatching {
-            pSamples.summary = "${dao.eventCount()} 条"
-            pArchived.summary = "${dao.dailyStatCount()} 天"
+            pSamples.summary = String.format(Locale.US, "%,d 条", dao.eventCount())
+            pArchived.summary = String.format(Locale.US, "%,d 天", dao.dailyStatCount())
         }
     }
 

@@ -42,8 +42,31 @@ android {
         resValues = true
     }
 
+    signingConfigs {
+        // 【fainput / H】release 用**仓库里那份固定 keystore** —— 和 debug 是同一个。
+        // 签名一致 ⇒ release 与 debug 互相覆盖安装都不丢数据。
+        // （keystore 本身早就在仓库里：signing/debug.keystore，见 PROJECT.md §十一）
+        create("fainput") {
+            storeFile = rootProject.file("signing/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
+            // 【fainput / H】**不混淆、不裁资源** —— 用户明确要求。
+            // 不只是"省事"：这个项目大量依赖**反射**（Room / kotlinx.serialization /
+            // 导航路由的 @Serializable），R8 一开就得写一堆 keep 规则，
+            // 漏一条 = 只有运行时才炸的 bug。宁可 APK 大一点。
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("fainput")
+            // ⚠️ **保留 .debug 后缀** —— 数据是按包名存的。
+            // 换成不带后缀的包名 = 手机上多出一个全新 App，
+            // 你现在这些事件 / 词 / 搭配就全部看不见了。升级安装才对。
+            applicationIdSuffix = ".debug"
             resValue("mipmap", "app_icon", "@mipmap/ic_launcher")
             resValue("mipmap", "app_icon_round", "@mipmap/ic_launcher_round")
             // fainput: 字面量而非 @string/app_name_release

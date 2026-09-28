@@ -37,6 +37,15 @@ on:
           - artifact
           - bundle
 
+      build_type:
+        description: "构建类型：debug = 平时迭代 / release = 定版（不混淆 · 固定签名 · 覆盖安装不丢数据）"
+        required: false
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
+
 permissions:
   contents: read
 
@@ -164,10 +173,18 @@ jobs:
           keytool -list -keystore "$HOME/.android/debug.keystore" \
             -storepass android -alias androiddebugkey
 
-      - name: Build Debug APK
+      - name: Build APK
+        # 【fainput / H】release = 定版：**不混淆（R8 关）** + 固定签名 + 保留 .debug 后缀
+        # （保留后缀是为了覆盖安装不丢数据 —— 数据是按包名存的。）
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug
+          if [ "${{ inputs.build_type }}" = "release" ]; then
+            echo "──── 构建 release（R8 关闭）────"
+            ./gradlew :app:assembleRelease
+          else
+            echo "──── 构建 debug ────"
+            ./gradlew :app:assembleDebug
+          fi
 
       - name: "★ 策略门禁：零网络承诺"
         # fainput 的核心承诺是「数据不出设备」。
@@ -177,7 +194,7 @@ jobs:
         # 一旦有人（或某个库）引入了 INTERNET 权限，构建当场失败。
         run: |
           set -o pipefail
-          APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -n1)
+          APK=$(find app/build/outputs/apk/debug app/build/outputs/apk/release -name '*.apk' 2>/dev/null | head -n1)
           echo "检查产物: $APK"
           if [ -z "$APK" ]; then
             echo "::error::没找到 APK"
@@ -208,7 +225,8 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: fainput-debug-arm64
-          path: app/build/outputs/apk/debug/
+          # release 与 debug 分开命名/分目录，避免拿错
+          name: ${{ inputs.build_type == 'release' && 'fainput-release-arm64' || 'fainput-debug-arm64' }}
+          path: app/build/outputs/apk/${{ inputs.build_type == 'release' && 'release' || 'debug' }}/
           if-no-files-found: error
           retention-days: 30

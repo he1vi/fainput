@@ -59,6 +59,7 @@ import org.fcitx.fcitx5.android.daemon.FcitxConnection
 import org.fcitx.fcitx5.android.daemon.FcitxDaemon
 import org.fcitx.fcitx5.android.data.InputFeedbacks
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
+import org.fcitx.fcitx5.android.data.insight.PersonalDictionary
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreferenceProvider
@@ -429,6 +430,22 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     fun commitText(text: String, cursor: Int = -1) {
         val ic = currentInputConnection ?: return
+        // 【fainput】上屏落库的**唯一出口**。
+        //
+        // 为什么放在这里：`commitText` 是「把文字交给输入框」的唯一公共路径。
+        // 血泪教训 —— 用户打的 `183&&@&@7` 一个字都没进库：
+        // 符号页走的是 `CommitAction → service.commitText(...)`，
+        // 它既不产生 KeyEvent 也不产生 CommitStringEvent，**绕过所有采集点**。
+        // 与其给每条路都打补丁，不如守住这唯一出口。
+        //
+        // 采集是旁路：只做入队，绝不阻塞上屏。
+        if (text.isNotEmpty()) InsightRecorder.onTextCommitted(text)
+        // 【fainput / D-2】把够格的词写进引擎词库，并让它**立刻**重读
+        // （reloadPinyinCustomPhrase → loadCustomPhrase）。
+        // 内部叠了 20 秒节流，且只在「刚够门槛」时才真写盘 —— 不会打断打字。
+        lifecycleScope.launch {
+            runCatching { PersonalDictionary.publishIfNeeded(fcitx) }
+        }
         // when composing text equals commit content, finish composing text as-is
         if (composing.isNotEmpty() && composingText.toString() == text) {
             val c = if (cursor == -1) text.length else cursor

@@ -10,6 +10,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.core.FcitxAPI
 import org.fcitx.fcitx5.android.daemon.launchOnReady
+import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.input.broadcast.PreeditEmptyStateComponent
 import org.fcitx.fcitx5.android.input.candidates.horizontal.HorizontalCandidateComponent
@@ -70,7 +71,9 @@ class CommonKeyActionListener :
             // Chinese: select 1st candidate, except prediction candidates
             if (clientPreeditCached.isNotEmpty() || inputPanelCached.preedit.isNotEmpty()) {
                 // preedit not empty, maybe there are candidates to select ...
-                select(0)
+                // 【fainput / D-1'】空格选的是**显示上的第一个**，不是引擎的第一个。
+                // 候选被重排过时这两者不同，必须过一遍反向映射。
+                select(CandidateReranker.displayToEngine(0))
             }
         } else {
             // Other languages: commit preedit as-is

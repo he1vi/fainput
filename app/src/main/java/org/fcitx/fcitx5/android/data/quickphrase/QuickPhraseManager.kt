@@ -6,6 +6,7 @@ package org.fcitx.fcitx5.android.data.quickphrase
 
 import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.core.data.DataManager
+import org.fcitx.fcitx5.android.core.data.EngineUserDir
 import org.fcitx.fcitx5.android.utils.appContext
 import org.fcitx.fcitx5.android.utils.errorRuntime
 import org.fcitx.fcitx5.android.utils.withTempDir
@@ -19,7 +20,8 @@ object QuickPhraseManager {
     )
 
     private val customQuickPhraseDir = File(
-        appContext.getExternalFilesDir(null)!!, "data/data/quickphrase.d"
+        // 【fainput】必须跟引擎看同一个目录（FCITX_DATA_HOME）
+        EngineUserDir.base(), "data/data/quickphrase.d"
     ).also { it.mkdirs() }
 
     fun listQuickPhrase(): List<QuickPhrase> {

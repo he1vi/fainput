@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import org.fcitx.fcitx5.android.FcitxApplication
 import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.core.data.DataManager
+import org.fcitx.fcitx5.android.core.data.EngineUserDir
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.utils.ImmutableGraph
@@ -451,7 +452,12 @@ class Fcitx(private val context: Context) : FcitxAPI, FcitxLifecycleOwner {
                     locale,
                     dataDir,
                     nativeLibDir.toString(),
-                    (getExternalFilesDir(null) ?: filesDir).absolutePath,
+                    // 【fainput】引擎用户数据改放**内部存储**（见 EngineUserDir）。
+                    // 原来这里是 getExternalFilesDir(null) —— 用户词典
+                    // （user.dict / user.history / customphrase）会躺在
+                    // /sdcard/Android/data/<包名>/files/ 里，任何文件管理器都能读走。
+                    // 那是最不该外露的东西：它是从你打字里长出来的。
+                    EngineUserDir.base().absolutePath,
                     (externalCacheDir ?: cacheDir).absolutePath,
                     extDomains.toTypedArray()
                 )

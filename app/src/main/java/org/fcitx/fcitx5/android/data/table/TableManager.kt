@@ -5,6 +5,7 @@
 package org.fcitx.fcitx5.android.data.table
 
 import org.fcitx.fcitx5.android.R
+import org.fcitx.fcitx5.android.core.data.EngineUserDir
 import org.fcitx.fcitx5.android.data.table.dict.Dictionary
 import org.fcitx.fcitx5.android.data.table.dict.LibIMEDictionary
 import org.fcitx.fcitx5.android.utils.appContext
@@ -18,11 +19,13 @@ import java.util.zip.ZipInputStream
 object TableManager {
 
     private val inputMethodDir = File(
-        appContext.getExternalFilesDir(null)!!, "data/inputmethod"
+        // 【fainput】必须跟引擎看同一个目录（FCITX_DATA_HOME）
+        EngineUserDir.base(), "data/inputmethod"
     ).also { it.mkdirs() }
 
     private val tableDicDir = File(
-        appContext.getExternalFilesDir(null)!!, "data/table"
+        // 【fainput】必须跟引擎看同一个目录（FCITX_DATA_HOME）
+        EngineUserDir.base(), "data/table"
     ).also { it.mkdirs() }
 
     fun inputMethods(): List<TableBasedInputMethod> =

@@ -19,6 +19,7 @@ import androidx.annotation.RequiresApi
 import androidx.core.view.updateLayoutParams
 import org.fcitx.fcitx5.android.core.CapabilityFlags
 import org.fcitx.fcitx5.android.core.FcitxEvent
+import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.daemon.FcitxConnection
 import org.fcitx.fcitx5.android.daemon.launchOnReady
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
@@ -352,7 +353,10 @@ class InputView(
     override fun handleFcitxEvent(it: FcitxEvent<*>) {
         when (it) {
             is FcitxEvent.CandidateListEvent -> {
-                broadcaster.onCandidateUpdate(it.data)
+                // 【fainput / D-1'】候选栏注入：把我们学过的词提到本页最前面。
+                // 必须在广播之前做 —— 所有候选 UI 都从这里拿数据，改这一处就够了。
+                // （展开窗走 getCandidates() 直连引擎，显示的是引擎原序，不受影响。）
+                broadcaster.onCandidateUpdate(CandidateReranker.reorder(it.data))
             }
             is FcitxEvent.ClientPreeditEvent -> {
                 preeditEmptyState.updatePreeditEmptyState(clientPreedit = it.data)
@@ -360,6 +364,9 @@ class InputView(
             }
             is FcitxEvent.InputPanelEvent -> {
                 preeditEmptyState.updatePreeditEmptyState(preedit = it.data.preedit)
+                // 【fainput / D-1'】只有正在拼一个词的时候才谈得上"候选"，
+                // 空 preedit 时重排毫无意义。见 CandidateReranker.MIN_PREEDIT。
+                CandidateReranker.onPreeditChanged(it.data.preedit.strings.sumOf { s -> s.length })
                 broadcaster.onInputPanelUpdate(it.data)
             }
             is FcitxEvent.IMChangeEvent -> {

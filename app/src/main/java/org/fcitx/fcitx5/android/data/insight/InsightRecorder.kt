@@ -107,6 +107,39 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
     /** 本提交周期内各事件出现的次数，用来诊断采集盲区。 */
     private val eventTap = HashMap<String, Int>()
 
+    /**
+     * 【D-2】当前这次拼音串**本身**（不只是长度）。
+     *
+     * 为什么要留它：D-2 要把「用户打的拼音码 → 最终上屏的词」喂给个人词库。
+     * 只存长度的话这个映射永远建不起来 —— 而没有它，
+     * 引擎就永远学不会你的名字 / 术语 / 新词。
+     *
+     * 只保留**最近一次非空**的串：提交后引擎会再发一个空 preedit，
+     * 直接赋值会把刚打出来的码冲掉。
+     */
+    @Volatile
+    private var preeditText: String = ""
+
+    /** 【D-3】上一次提交，用来判断「打完又删重打」。 */
+    @Volatile
+    private var lastCommitCode: String = ""
+
+    @Volatile
+    private var lastCommitWord: String = ""
+
+    @Volatile
+    private var lastCommitAtMs: Long = 0L
+
+    /** 【D-3】刚被撤销掉的那次提交（撤销窗口内有效）。 */
+    @Volatile
+    private var undoneCode: String = ""
+
+    @Volatile
+    private var undoneWord: String = ""
+
+    /** 【D-3】提交后多久内的删除算「我打错了」。 */
+    private const val UNDO_WINDOW_MS = 3000L
+
     // ==================== 生命周期 ====================
 
     fun init(context: Context) {
@@ -210,6 +243,22 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         else -> false
     }
 
+    /**
+     * 【落库唯一入口】任何上屏的文本都会经过这里。
+     *
+     * 由 `FcitxInputMethodService.commitText()` 调用 ——
+     * 那是所有上屏路径的公共收口：
+     * 引擎提交 · 直通提交 · 符号页 CommitAction · 剪贴板 · 表情面板。
+     *
+     * 为什么不再分散在各事件分支里：`183&&@&@7` 整串丢失的教训 ——
+     * 符号页的提交既不产生 KeyEvent 也不产生 CommitStringEvent，
+     * 事件分支根本看不见它。
+     */
+    fun onTextCommitted(text: String) {
+        if (!isReady || text.isEmpty()) return
+        record(text)
+    }
+
     // ==================== 事件入口 ====================
 
     /**
@@ -233,8 +282,10 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                     // **一个字都没进库**，整整漏掉 40 个字符。
                     //
                     // 所以在这里补一刀，把直通提交也当成一次提交记下来。
+                    // ⚠️ 这里**不再落库** —— 落库统一挪到
+                    //    `FcitxInputMethodService.commitText()`（唯一出口）。
+                    //    原因见 onTextCommitted 的注释。
                     tap("Key:direct")
-                    record(Character.toString(d.unicode))
                     return
                 }
                 // 只算按下，不然一次按键算两遍。
@@ -257,6 +308,12 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                 // 取本周期内的**最大值**：提交之后 fcitx5 会再发一个空 preedit，
                 // 直接赋值会把刚打出来的码长冲掉。
                 if (len > preeditLength) preeditLength = len
+                // 【D-2】顺手把拼音串本身也留下来 —— 「码 → 词」的映射靠它。
+                // 同样只在非空时覆盖，理由和上面完全一样。
+                if (len > 0) {
+                    val t = event.data.preedit.strings.joinToString("")
+                    if (t.isNotEmpty()) preeditText = t
+                }
                 tap("InputPanel")
             }
 
@@ -305,12 +362,23 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                 tap("PagedCandidate")
             }
 
-            is FcitxEvent.DeleteSurroundingEvent -> tap("DeleteSurrounding")
+            is FcitxEvent.DeleteSurroundingEvent -> {
+                tap("DeleteSurrounding")
+                // 【D-3】「打完又删」= 我打错了。
+                // 这里只**标记**，要等下一次提交才能凑成 (码, 错词, 对词)。
+                val t = System.currentTimeMillis()
+                if (lastCommitWord.isNotEmpty() && t - lastCommitAtMs <= UNDO_WINDOW_MS) {
+                    undoneCode = lastCommitCode
+                    undoneWord = lastCommitWord
+                }
+            }
             is FcitxEvent.IMChangeEvent -> tap("IMChange")
             is FcitxEvent.StatusAreaEvent -> tap("StatusArea")
 
             is FcitxEvent.CommitStringEvent -> {
-                record(event.data.text)
+                // 不在这里落库 —— 上游拿到它之后会调 `commitText(...)`，
+                // 落库统一在那边做（唯一出口，见 onTextCommitted）。
+                tap("CommitString")
             }
 
             else -> Unit
@@ -335,6 +403,13 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
             ?: lastCandidates.indexOf(text).takeIf { it >= 0 }
             ?: -1
         val snapshotTap = eventTap.toMap()
+        // 【D-2】这次用到的拼音码也要在重置前快照下来
+        val snapshotCode = preeditText
+        // 【D-3】取出「刚被撤销的那次提交」，取完就清 —— 只用一次
+        val undoneCodeSnapshot = undoneCode
+        val undoneWordSnapshot = undoneWord
+        undoneCode = ""
+        undoneWord = ""
         val snapshotPkg = pendingPkg
         val snapshotClass = pendingInputClass
         val snapshotVariation = pendingInputVariation
@@ -393,7 +468,22 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                     )
                     if (level == InsightLevel.PLAIN) {
                         bumpWord(d, text.trim(), now, snapshotCandidateIndex)
+                        // 【D-2】喂给个人词库：「这次打的拼音码 → 上屏的词」。
+                        // 只累积不写盘 —— 要攒够次数才够格进引擎词库。
+                        PersonalDictionary.observe(snapshotCode, text)
+                        // 【D-3】上一次提交刚被删掉、这次出的是别的词 →
+                        // 记一条纠错对。**只记，不自动改词库**：
+                        // 由用户在界面上决定要不要采纳（用户原话：提示用户要不要纠错）。
+                        if (undoneWordSnapshot.isNotEmpty() && undoneWordSnapshot != text) {
+                            PersonalDictionary.observeCorrection(
+                                undoneCodeSnapshot, undoneWordSnapshot, text
+                            )
+                        }
                     }
+                    // 【D-3】记下这一次，供下一轮判断「打完又删」
+                    lastCommitCode = snapshotCode
+                    lastCommitWord = text
+                    lastCommitAtMs = now
                 } catch (e: Exception) {
                     // 采集失败只丢样本，绝不上抛
                     Timber.w(e, "[insight] failed to record commit")

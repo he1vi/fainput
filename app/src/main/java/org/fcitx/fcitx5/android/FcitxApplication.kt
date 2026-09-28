@@ -20,6 +20,7 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.plus
 import org.fcitx.fcitx5.android.daemon.FcitxDaemon
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
+import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
@@ -153,6 +154,10 @@ class FcitxApplication : Application() {
         ClipboardManager.init(ctx)
         // 【fainput】输入行为采集：本地落库，见 data/insight/
         InsightRecorder.init(ctx)
+        // 【fainput / D-1'】候选重排器：把学到的词提到候选栏最前面
+        CandidateReranker.init(ctx)
+        // 【fainput / D-2+D-3】个人词库：让引擎真正认识你的词
+        PersonalDictionary.init(ctx)
         // 【fainput】充电 / 熄屏时叫一下后台维护（存储分层归档）
         ContextCompat.registerReceiver(
             this,

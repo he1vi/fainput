@@ -6,6 +6,7 @@ package org.fcitx.fcitx5.android.data.pinyin
 
 import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.core.data.DataManager
+import org.fcitx.fcitx5.android.core.data.EngineUserDir
 import org.fcitx.fcitx5.android.data.pinyin.dict.BuiltinDictionary
 import org.fcitx.fcitx5.android.data.pinyin.dict.LibIMEDictionary
 import org.fcitx.fcitx5.android.data.pinyin.dict.PinyinDictionary
@@ -19,7 +20,9 @@ import java.io.InputStream
 object PinyinDictManager {
 
     private val pinyinDicDir = File(
-        appContext.getExternalFilesDir(null)!!, "data/pinyin/dictionaries"
+        // 【fainput】必须跟引擎看同一个目录（FCITX_DATA_HOME），
+        // 否则下载的词典引擎找不到 = "词典全部消失"。
+        EngineUserDir.base(), "data/pinyin/dictionaries"
     ).also { it.mkdirs() }
 
     private val builtinPinyinDictDir = File(

@@ -16,6 +16,7 @@ import androidx.preference.PreferenceCategory
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.data.insight.DeviceState
+import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
 import org.fcitx.fcitx5.android.data.insight.db.LevelCount
@@ -112,6 +113,25 @@ class InsightFragment : PaddingPreferenceFragment() {
             addPreference(catWords)
 
             addCategory("操作") {
+                // 【fainput / D-1'】候选智能排序的总开关。
+                // 为什么必须给开关：这是唯一一处**会改变用户看到的东西**的功能，
+                // 用户必须能一句话关掉它。关掉 = 完全回到引擎原序。
+                fun rerankText(): String = if (CandidateReranker.isEnabled)
+                    "已开启 · 已学 ${CandidateReranker.learnedWordCount} 个词 · 点一下关闭"
+                else "已关闭 · 点一下开启"
+
+                // ⚠️ 不能用 info() —— 那个辅助函数会设 isSelectable = false（纯展示行），
+                //    点了没反应。这里必须用可点的普通 Preference。
+                val pRerank = Preference(context).apply {
+                    setup("候选智能排序", rerankText())
+                    setOnPreferenceClickListener {
+                        CandidateReranker.setEnabled(!CandidateReranker.isEnabled)
+                        summary = rerankText()
+                        true
+                    }
+                }
+                addPreference(pRerank)
+
                 pRunNow = Preference(context).apply {
                     setup("立即整理数据", "把 90 天前的逐条记录聚合归档，让数据库不再增长")
                     setOnPreferenceClickListener {

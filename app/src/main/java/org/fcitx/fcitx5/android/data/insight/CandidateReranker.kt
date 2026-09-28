@@ -1,0 +1,281 @@
+/*
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ * SPDX-FileCopyrightText: Copyright 2026 fainput Contributors
+ */
+package org.fcitx.fcitx5.android.data.insight
+
+import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.launch
+import org.fcitx.fcitx5.android.core.FcitxEvent
+import timber.log.Timber
+import kotlin.math.exp
+
+/**
+ * 【D-1'】候选栏注入 —— 「越用越懂你」真正开始的地方。
+ *
+ * ## 它做什么
+ *
+ * 每次候选列表到达 UI 之前，把**你已经学过的词**提到本页最前面。
+ *
+ * ```
+ * 引擎给的（engine order）:  你好  尼豪  你号  拟好  泥壕 …
+ * 我们显示的（display order）: 泥壕  你好  尼豪  你号  拟好 …
+ *                              ↑ 你以前打「nihao」时平均选到第 5 位
+ * ```
+ *
+ * ## 为什么不是"另加一条预测栏"
+ *
+ * 用户不关心"这是引擎给的"还是"我们推的" —— 他只要那个词。
+ * **两条候选栏是外挂，不是一个输入法该有的样子。**（2026-09-28 用户拍板）
+ *
+ * ## 三条安全边界（这是"要有限度"的落地）
+ *
+ * | 边界 | 值 | 为什么 |
+ * |---|---|---|
+ * | **最少见过几次才提升** | [MIN_COUNT] = 3 | 打过一次的词不足以证明"你这人爱用" |
+ * | **一次最多提升几个** | [MAX_PROMOTE] = 2 | 全推到前面 = 频繁推荐 = 适得其反 |
+ * | **码长门槛** | [MIN_PREEDIT] = 2 | 打一个字就重排，等于在跟用户抢方向盘 |
+ *
+ * ## 时间衰减（照抄 rime 的思想，不是重造轮子）
+ *
+ * ```
+ * score = count × e^( -(now - lastSeen) / TAU )
+ * ```
+ * `_refs/librime/dynamics.h` 里的 `formula_d` 就是指数衰减；
+ * rime 用时间衰减解决"越推越推"，我们用同一招。
+ * **三个月前打了 100 次、最近一次都没碰过的词，不该压过昨天刚打 5 次的词。**
+ *
+ * ## 下标映射（正确性的关键）
+ *
+ * 重排会**打乱显示顺序与引擎下标的对应关系**：
+ * ```
+ * perm = [4, 0, 1, 2, 3]     // 显示第 0 位 → 引擎第 4 个
+ * 用户点显示第 0 位 → 必须 select(4)，而不是 select(0)
+ * ```
+ * 所有"按显示位置选择"的地方都要过 [displayToEngine]：
+ * - `HorizontalCandidateComponent` 点击 / 长按
+ * - `CommonKeyActionListener` 空格选首选（`select(0)`）
+ *
+ * ⚠️ **`BaseExpandedCandidateWindow`（展开窗）不走这里** ——
+ *    它用 `getCandidates(offset, limit)` 直接从引擎拉全量列表，
+ *    显示的就是引擎原序，所以它传的 idx 是引擎下标，**不能映射**。
+ *
+ * ## 已查证的事实（省得以后再查）
+ *
+ * - 数字键 1-9 **不会**选候选：引擎 `pinyin.cpp:1400` 是
+ *   `if (!event.isVirtual())` —— 虚拟按键（屏幕键盘）被主动排除。
+ *   所以重排**不会**造成"按 3 出第 4 个"的错位。
+ * - `PagedCandidateEvent` 实测不发，候选页的真正来源是 `CandidateListEvent`。
+ */
+object CandidateReranker {
+
+    private const val PREFS_NAME = "fainput_rerank"
+    private const val KEY_ENABLED = "enabled"
+
+    /** 至少提交过这么多次，才够格被提升。 */
+    private const val MIN_COUNT = 3
+
+    /** 一次最多提升几个 —— "要有限度，不然频繁推荐反而适得其反"。 */
+    private const val MAX_PROMOTE = 2
+
+    /** 预编辑（拼音串）短于这个长度就不重排。 */
+    private const val MIN_PREEDIT = 2
+
+    /** 提升表最短刷新间隔。 */
+    private const val REFRESH_INTERVAL_MS = 30_000L
+
+    /** 时间衰减常数：7 天。 */
+    private const val TAU_MS = 7L * 24 * 3600 * 1000
+
+    /** 长按「短暂屏蔽推荐」的有效期。 */
+    private const val SUPPRESS_MS = 24L * 3600 * 1000
+
+    /** 词表最多看这么多条（够用，且刷新很快）。 */
+    private const val TOP_LIMIT = 500
+
+    private var prefs: SharedPreferences? = null
+
+    // ==================== 状态 ====================
+
+    @Volatile
+    private var enabled: Boolean = true
+
+    /** 词 → 分数（已含时间衰减）。 */
+    @Volatile
+    private var promote: Map<String, Double> = emptyMap()
+
+    /** 词 → 屏蔽到什么时候（毫秒时间戳）。 */
+    private val suppressed = HashMap<String, Long>()
+
+    @Volatile
+    private var lastLoadAt: Long = 0L
+
+    /** 最近一次看到的预编辑长度。 */
+    @Volatile
+    private var lastPreeditLength: Int = 0
+
+    /**
+     * 当前这一屏的「显示下标 → 引擎下标」映射。
+     * `null` 表示**没有重排**（原序），此时映射是恒等的。
+     */
+    @Volatile
+    private var perm: IntArray? = null
+
+    // ==================== 生命周期 ====================
+
+    fun init(context: Context) {
+        if (prefs != null) return
+        val p = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs = p
+        enabled = p.getBoolean(KEY_ENABLED, true)
+        Timber.i("[rerank] init, enabled=%s", enabled)
+    }
+
+    val isEnabled: Boolean
+        get() = enabled
+
+    fun setEnabled(value: Boolean) {
+        enabled = value
+        prefs?.edit()?.putBoolean(KEY_ENABLED, value)?.apply()
+        if (!value) perm = null
+        Timber.i("[rerank] enabled -> %s", value)
+    }
+
+    /** 已学会多少个词（给「输入数据」页显示用）。 */
+    val learnedWordCount: Int
+        get() = promote.size
+
+    // ==================== 输入 ====================
+
+    /**
+     * 由 `InputView` 在收到 `InputPanelEvent` 时调用。
+     *
+     * 为什么需要它：只有正在拼一个词（preedit 非空）的时候才谈得上"候选"。
+     * 空 preedit 时重排毫无意义，还会让候选栏在收起/展开时闪一下。
+     */
+    fun onPreeditChanged(length: Int) {
+        lastPreeditLength = length
+    }
+
+    /**
+     * 长按候选词 → 「短暂屏蔽推荐」。
+     *
+     * **不是删除**：词照旧留在引擎词库里，正常打字还会在它原来的位置出现，
+     * 只是**不再被我们提前**。过了 [SUPPRESS_MS] 自动恢复。
+     */
+    fun suppress(word: String) {
+        val w = word.trim()
+        if (w.isEmpty()) return
+        suppressed[w] = System.currentTimeMillis() + SUPPRESS_MS
+        perm = null
+        Timber.i("[rerank] suppressed until +24h: len=%d", w.length)
+    }
+
+    fun isSuppressed(word: String): Boolean {
+        val until = suppressed[word.trim()] ?: return false
+        if (until <= System.currentTimeMillis()) {
+            suppressed.remove(word.trim())
+            return false
+        }
+        return true
+    }
+
+    // ==================== 核心：重排 ====================
+
+    /**
+     * 把 [data] 里的候选词重排。**只提升，不增删** ——
+     * 候选总数、每个词的内容都不变，只有顺序变。
+     */
+    fun reorder(data: FcitxEvent.CandidateListEvent.Data): FcitxEvent.CandidateListEvent.Data {
+        perm = null
+        val list = data.candidates
+        if (!enabled || list.size < 3) return data
+        if (lastPreeditLength < MIN_PREEDIT) return data
+
+        maybeRefresh()
+        val scores = promote
+        if (scores.isEmpty()) return data
+
+        val now = System.currentTimeMillis()
+        val scored = ArrayList<Pair<Int, Double>>(list.size)
+        list.forEachIndexed { i, w ->
+            val t = w.text.trim()
+            if (t.isEmpty()) return@forEachIndexed
+            val until = suppressed[t]
+            if (until != null && until > now) return@forEachIndexed
+            val s = scores[t] ?: return@forEachIndexed
+            scored += i to s
+        }
+        if (scored.isEmpty()) return data
+
+        // 分数高的优先；同分保持引擎原有的先后（稳定）
+        scored.sortWith(compareByDescending<Pair<Int, Double>> { it.second }.thenBy { it.first })
+        val front = scored.take(MAX_PROMOTE).map { it.first }
+
+        // 已经都在最前面 → 不用动
+        if (front.withIndex().all { (i, engineIdx) -> i == engineIdx }) return data
+
+        val order = ArrayList<Int>(list.size)
+        order += front
+        list.indices.forEach { if (it !in front) order += it }
+        val p = IntArray(order.size) { order[it] }
+        perm = p
+        Timber.i(
+            "[rerank] promoted %d of %d candidates (front=%s)",
+            front.size, list.size, front.toString()
+        )
+        return data.copy(candidates = Array(list.size) { list[p[it]] })
+    }
+
+    /**
+     * 显示下标 → 引擎下标。
+     *
+     * 没重排时是恒等映射，所以可以无脑调用。
+     */
+    fun displayToEngine(idx: Int): Int {
+        val p = perm ?: return idx
+        return if (idx in p.indices) p[idx] else idx
+    }
+
+    /**
+     * 最近一次的「显示下标 → 引擎下标」映射，没重排时返回 `null`。
+     *
+     * 给 `HorizontalCandidateViewAdapter` 用：候选条把引擎下标直接放进
+     * `holder.idx`，于是**点击、长按、动作菜单全都不用改** ——
+     * 它们拿到的本来就是引擎下标。
+     */
+    fun lastPermutation(): IntArray? = perm?.copyOf()
+
+    // ==================== 提升表 ====================
+
+    private fun maybeRefresh() {
+        val now = System.currentTimeMillis()
+        if (now - lastLoadAt < REFRESH_INTERVAL_MS) return
+        lastLoadAt = now
+        if (!InsightRecorder.isReady) return
+        InsightRecorder.launch {
+            runCatching {
+                val rows = InsightRecorder.topWords(TOP_LIMIT)
+                val t = System.currentTimeMillis()
+                val map = HashMap<String, Double>(rows.size)
+                rows.forEach { w ->
+                    if (w.count < MIN_COUNT) return@forEach
+                    val text = w.word.trim()
+                    // 只要词，不要句子。长度 1 的不进（直通提交的噪音）。
+                    if (text.length < 2 || text.length > 12) return@forEach
+                    val recency = exp(-(t - w.lastSeen).toDouble() / TAU_MS)
+                    map[text] = w.count * recency
+                }
+                promote = map
+                Timber.i("[rerank] loaded %d words from %d rows", map.size, rows.size)
+            }.onFailure {
+                Timber.w(it, "[rerank] load failed")
+            }
+        }
+    }
+
+    /** 仅供「输入数据」页展示用。 */
+    fun topLearned(limit: Int = 5): List<Pair<String, Double>> =
+        promote.entries.sortedByDescending { it.value }.take(limit).map { it.key to it.value }
+}

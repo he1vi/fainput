@@ -112,7 +112,7 @@ abstract class BaseInputView(
             actions.forEach { action ->
                 items += action.text to { triggerCandidateAction(idx, action.id) }
             }
-            items += "暂时不要推荐（24 小时）" to { CandidateReranker.suppress(text) }
+            items += "暂时不要推荐" to { CandidateReranker.suppress(text) }
             candidateActionMenu = showMenuAboveAnchor(text, items, view)
         }
     }

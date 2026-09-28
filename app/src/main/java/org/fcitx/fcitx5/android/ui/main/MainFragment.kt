@@ -70,10 +70,17 @@ class MainFragment : PaddingPreferenceFragment() {
             addCategory("fainput") {
                 addPreference(
                     "输入数据",
-                    "你的输入习惯：实时统计 · 学习状态 · 最常用的词",
+                    "",
                     icon = R.drawable.ic_baseline_list_alt_24
                 ) {
                     navigateWithAnim(SettingsRoute.Insight)
+                }
+                addPreference(
+                    "拼音",
+                    "",
+                    icon = R.drawable.ic_baseline_language_24
+                ) {
+                    navigateWithAnim(SettingsRoute.PinyinSettings)
                 }
             }
             addCategory("Fcitx") {

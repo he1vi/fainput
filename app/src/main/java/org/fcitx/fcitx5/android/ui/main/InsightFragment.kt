@@ -99,29 +99,26 @@ class InsightFragment : PaddingPreferenceFragment() {
         preferenceScreen = preferenceManager.createPreferenceScreen(requireContext()).apply {
 
             addCategory("今天") {
-                pTodayChars = info("打了多少字", "—")
-                pTodayEvents = info("提交次数", "—")
-                pCodeLen = info("平均码长", "打一个字要敲几个字母，越小越省力")
-                pFirstHit = info("首选命中率", "不用翻页直接选中的比例")
-                pSpeed = info("打字速度", "字 / 分钟")
-                pPaged = info("翻页率", "需要翻页才能找到词的比例")
+                pTodayChars = info("字数", "—")
+                pTodayEvents = info("提交", "—")
+                pCodeLen = info("平均码长", "—")
+                pFirstHit = info("首选命中率", "—")
+                pSpeed = info("速度", "—")
+                pPaged = info("翻页率", "—")
             }
-
             addCategory("累计") {
-                pTotalChars = info("总字数", "—")
-                pTotalEvents = info("总提交次数", "—")
+                pTotalChars = info("字数", "—")
+                pTotalEvents = info("提交", "—")
             }
-
             addCategory("学习状态") {
                 pLearnState = info("状态", "—")
                 pWhy = info("当前判断", "—")
-                pLastRun = info("上次整理数据", "—")
-                pSamples = info("待整理样本", "—")
-                pArchived = info("已归档天数", "—")
+                pLastRun = info("上次整理", "—")
+                pSamples = info("样本", "—")
+                pArchived = info("归档", "—")
             }
-
             addCategory("隐私保护") {
-                pLevels = info("分级统计", "按敏感度分级存储的条数")
+                pLevels = info("分级", "—")
             }
 
             catWords = PreferenceCategory(context).apply { setTitle("最常用的词") }
@@ -133,13 +130,13 @@ class InsightFragment : PaddingPreferenceFragment() {
             //    「搜索」在我们这儿做；「管理」跳引擎自带的编辑器 ——
             //    上游那套编辑器其实是完整的（新增 / 修改 / 删除 / 停用），
             //    唯一缺的就是**没有任何入口**。我们只补入口，不重复造一个。
-            addCategory("我的词库") {
+            addCategory("词库") {
                 Preference(context).apply {
-                    setup("搜索我的词库", "按拼音码或词，查你教给输入法的词")
+                    setup("搜索", "")
                     setOnPreferenceClickListener { askSearch(); true }
                 }.also { addPreference(it) }
                 Preference(context).apply {
-                    setup("管理我的词库", "新增 / 修改 / 删除 / 停用（引擎自带编辑器）")
+                    setup("编辑", "")
                     setOnPreferenceClickListener {
                         navigateWithAnim(SettingsRoute.PinyinCustomPhrase)
                         true
@@ -168,14 +165,11 @@ class InsightFragment : PaddingPreferenceFragment() {
                 // 【fainput / D-1'】候选智能排序的总开关。
                 // 为什么必须给开关：这是唯一一处**会改变用户看到的东西**的功能，
                 // 用户必须能一句话关掉它。关掉 = 完全回到引擎原序。
-                fun rerankText(): String = if (CandidateReranker.isEnabled)
-                    "已开启 · 已学 ${CandidateReranker.learnedWordCount} 个词 · 点一下关闭"
-                else "已关闭 · 点一下开启"
+                fun rerankText(): String =
+                    if (CandidateReranker.isEnabled) "开 · ${CandidateReranker.learnedWordCount} 词" else "关"
 
-                // ⚠️ 不能用 info() —— 那个辅助函数会设 isSelectable = false（纯展示行），
-                //    点了没反应。这里必须用可点的普通 Preference。
                 val pRerank = Preference(context).apply {
-                    setup("候选智能排序", rerankText())
+                    setup("候选排序", rerankText())
                     setOnPreferenceClickListener {
                         CandidateReranker.setEnabled(!CandidateReranker.isEnabled)
                         summary = rerankText()
@@ -185,7 +179,7 @@ class InsightFragment : PaddingPreferenceFragment() {
                 addPreference(pRerank)
 
                 pRunNow = Preference(context).apply {
-                    setup("立即整理数据", "把 90 天前的逐条记录聚合归档，让数据库不再增长")
+                    setup("立即整理", "")
                     setOnPreferenceClickListener {
                         InsightMaintenance.forceRun()
                         true
@@ -194,7 +188,7 @@ class InsightFragment : PaddingPreferenceFragment() {
                 addPreference(pRunNow)
 
                 pWipe = Preference(context).apply {
-                    setup("清空全部数据", "不可恢复")
+                    setup("清空数据", "")
                     setOnPreferenceClickListener { confirmWipe(); true }
                 }
                 addPreference(pWipe)
@@ -254,7 +248,7 @@ class InsightFragment : PaddingPreferenceFragment() {
                 Locale.US, "%.1f%%  (%d / %d)",
                 100.0 * s.candidateHits / s.candidateSamples, s.candidateHits, s.candidateSamples
             )
-        } else "还没有候选样本（打完选一次词就有了）"
+        } else "暂无"
 
         pSpeed.summary = if (s.durationMs > 0) {
             String.format(Locale.US, "%.0f 字/分钟", s.chars * 60_000.0 / s.durationMs)
@@ -342,7 +336,7 @@ class InsightFragment : PaddingPreferenceFragment() {
         pLastRun.summary = if (last == 0L) "从未" else ago(now - last)
 
         runCatching {
-            pSamples.summary = "${dao.eventCount()} 条（保留最近 ${InsightMaintenance.retentionDays()} 天）"
+            pSamples.summary = "${dao.eventCount()} 条"
             pArchived.summary = "${dao.dailyStatCount()} 天"
         }
     }
@@ -369,13 +363,11 @@ class InsightFragment : PaddingPreferenceFragment() {
         catBlocked.removeAll()
         val list = CandidateReranker.suppressedWords()
         if (list.isEmpty()) {
-            catBlocked.addPreference(
-                plain("没有屏蔽任何词", "在候选词上长按，可以「暂时不要推荐」，24 小时后自动恢复")
-            )
+            catBlocked.addPreference(plain("暂无", ""))
             return
         }
         catBlocked.addPreference(Preference(requireContext()).apply {
-            setup("全部恢复", "把所有暂时屏蔽的词一次性放回来")
+            setup("全部恢复", "")
             setOnPreferenceClickListener {
                 CandidateReranker.clearSuppressed()
                 renderBlocked()
@@ -385,10 +377,8 @@ class InsightFragment : PaddingPreferenceFragment() {
         val now = System.currentTimeMillis()
         list.forEach { (word, until) ->
             catBlocked.addPreference(Preference(requireContext()).apply {
-                val left = (until - now).coerceAtLeast(0L)
-                val h = left / 3600_000L
-                val m = (left % 3600_000L) / 60_000L
-                setup(word, "还有 ${h} 小时 ${m} 分自动恢复 · 点一下立即恢复")
+                val h = (until - now).coerceAtLeast(0L) / 3600_000L
+                setup(word, "${h} 小时后恢复")
                 setOnPreferenceClickListener {
                     CandidateReranker.unsuppress(word)
                     renderBlocked()
@@ -404,20 +394,12 @@ class InsightFragment : PaddingPreferenceFragment() {
         catCorrections.removeAll()
         val list = PersonalDictionary.pendingCorrections()
         if (list.isEmpty()) {
-            catCorrections.addPreference(
-                plain(
-                    "暂时没有",
-                    "当你「打完又删、重打另一个词」时，这里会问你要不要记住这个改法"
-                )
-            )
+            catCorrections.addPreference(plain("暂无", ""))
             return
         }
         list.take(20).forEach { c ->
             catCorrections.addPreference(Preference(requireContext()).apply {
-                setup(
-                    "${c.code} → ${c.right}",
-                    "你打过「${c.wrong}」又改成「${c.right}」，共 ${c.count} 次"
-                )
+                setup("「${c.wrong}」→「${c.right}」", "${c.code} · ${c.count} 次")
                 setOnPreferenceClickListener { askCorrection(c); true }
             })
         }
@@ -426,10 +408,7 @@ class InsightFragment : PaddingPreferenceFragment() {
     private fun askCorrection(c: PersonalDictionary.Correction) {
         AlertDialog.Builder(requireContext())
             .setTitle("记住这个改法？")
-            .setMessage(
-                "以后打「${c.code}」时，把「${c.right}」放到候选最前面。\n\n" +
-                    "只影响你自己，不会上传任何东西。"
-            )
+            .setMessage("以后打「${c.code}」，把「${c.right}」放最前面。")
             .setNeutralButton("取消", null)
             .setNegativeButton("忽略") { _, _ ->
                 PersonalDictionary.dismissCorrection(c)
@@ -466,18 +445,16 @@ class InsightFragment : PaddingPreferenceFragment() {
     private fun renderSearch(keyword: String) {
         catSearchResult.removeAll()
         val kw = keyword.trim()
-        catSearchResult.setTitle(if (kw.isEmpty()) "搜索结果（全部）" else "搜索结果「$kw」")
+        catSearchResult.setTitle(if (kw.isEmpty()) "搜索结果" else "搜索「$kw」")
         val hits = PersonalDictionary.search(kw)
         if (hits.isEmpty()) {
-            catSearchResult.addPreference(
-                plain("没有匹配", "这里只列「你教给输入法的词」；引擎内置词典不在此列")
-            )
+            catSearchResult.addPreference(plain("无匹配", ""))
             return
         }
-        catSearchResult.addPreference(plain("共 ${hits.size} 条", "点任意一条可以删除它"))
+        catSearchResult.addPreference(plain("${hits.size} 条", ""))
         hits.take(50).forEach { e ->
             catSearchResult.addPreference(Preference(requireContext()).apply {
-                setup(e.value, "码 ${e.code} · 序号 ${e.order} · 点一下删除")
+                setup(e.value, "码 ${e.code} · 序号 ${e.order}")
                 setOnPreferenceClickListener { confirmDeleteEntry(e); true }
             })
         }
@@ -486,7 +463,7 @@ class InsightFragment : PaddingPreferenceFragment() {
     private fun confirmDeleteEntry(e: PersonalDictionary.Entry) {
         AlertDialog.Builder(requireContext())
             .setTitle("删除「${e.value}」？")
-            .setMessage("会从你自己的词库里移除这一条（码 ${e.code}）。不会影响引擎内置词典。")
+            .setMessage("移除码 ${e.code} 这一条。")
             .setNegativeButton("取消", null)
             .setPositiveButton("删除") { _, _ ->
                 lifecycleScope.launch {
@@ -494,7 +471,7 @@ class InsightFragment : PaddingPreferenceFragment() {
                         viewModel.fcitx.runOnReady { PersonalDictionary.removeEntry(this, e) }
                     }
                     catSearchResult.removeAll()
-                    catSearchResult.addPreference(plain("已删除", "可以再搜一次看结果"))
+                    catSearchResult.addPreference(plain("已删除", ""))
                 }
             }
             .show()

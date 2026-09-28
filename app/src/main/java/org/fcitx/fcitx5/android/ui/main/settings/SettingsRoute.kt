@@ -91,6 +91,10 @@ sealed class SettingsRoute : Parcelable {
     @Serializable
     data object Insight : SettingsRoute()
 
+    /** 【fainput / S】拼音设置 —— 模糊音 / 常见错拼等 21 项（上游已实现，我们补入口） */
+    @Serializable
+    data object PinyinSettings : SettingsRoute()
+
     @Serializable
     data object Developer : SettingsRoute()
 
@@ -232,6 +236,9 @@ sealed class SettingsRoute : Parcelable {
             }
             fragment<InsightFragment, Insight> {
                 label = "输入数据"
+            }
+            fragment<PinyinSettingsFragment, PinyinSettings> {
+                label = "拼音"
             }
             fragment<DeveloperFragment, Developer> {
                 label = ctx.getString(R.string.developer)

@@ -193,8 +193,17 @@ jobs:
         #
         # 一旦有人（或某个库）引入了 INTERNET 权限，构建当场失败。
         run: |
-          set -o pipefail
-          APK=$(find app/build/outputs/apk/debug app/build/outputs/apk/release -name '*.apk' 2>/dev/null | head -n1)
+          # ⚠️ 这里**故意不开** `set -o pipefail` —— 开了它这一步必然失败，
+          #    而且失败点和权限毫无关系，排查时会把人带偏：
+          #    ① `find apk/debug apk/release` 两个目录**必有一个不存在**
+          #       （build debug 时没有 release，反之亦然）⇒ find 退出码 1
+          #    ② `| head -n1` 提前关掉管道 ⇒ find 收到 SIGPIPE ⇒ 退出码 141
+          #    再叠上 `bash -e` ⇒ 脚本在这一行当场退出，
+          #    后面的 `cat 权限清单` 和 `grep INTERNET` 一个字都不会跑。
+          #
+          #    2026-09-29 实际踩过：一次 release 构建里 `assembleRelease` 显示
+          #    BUILD SUCCESSFUL，门禁却报 exit 1，日志里连"检查产物"都没打印出来。
+          APK=$( (find app/build/outputs/apk/debug app/build/outputs/apk/release -name '*.apk' 2>/dev/null || true) | head -n1 )
           echo "检查产物: $APK"
           if [ -z "$APK" ]; then
             echo "::error::没找到 APK"

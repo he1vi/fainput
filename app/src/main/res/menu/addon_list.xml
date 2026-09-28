@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  【fainput】「附加元件」页的右上角菜单。
+
+  目前只有一项：**导入** —— 把用户自己的 `.lua` 脚本装成一个 Lua 附加组件。
+  它是"运行时导入"唯一能干净落地的形态：.so 外挂要从私有目录 dlopen，
+  Android 从 API 24 起禁止（`is not accessible for the namespace`）。
+-->
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/import_lua"
+        android:title="导入"
+        app:showAsAction="always" />
+
+    <item
+        android:id="@+id/manage_lua"
+        android:title="已导入"
+        app:showAsAction="never" />
+
+</menu>

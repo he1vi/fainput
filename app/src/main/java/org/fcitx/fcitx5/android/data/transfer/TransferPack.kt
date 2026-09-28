@@ -10,6 +10,7 @@ import androidx.room.Room
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.fcitx.fcitx5.android.data.insight.db.InsightDatabase
+import org.fcitx.fcitx5.android.core.data.EngineUserDir
 import org.fcitx.fcitx5.android.utils.appContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -67,7 +68,16 @@ object TransferPack {
     )
 
     /** 引擎自己的用户目录（`customphrase` 等就住在这里）。 */
-    private fun engineDir(): File = File(appContext.filesDir, "fcitx5-user")
+    /**
+     * 引擎用户目录 —— **必须走 [EngineUserDir]**。
+     *
+     * ⚠️ 踩过的坑：这里原来写的是 `File(appContext.filesDir, "fcitx5-user")`。
+     * 但引擎是用 **directBootAwareContext** 启动的，那是
+     * `/data/user_de/0/<包名>/files` —— 跟 `appContext.filesDir`
+     * （`/data/user/0/<包名>/files`）**是两个完全不同的目录**。
+     * 结果就是：`config/`、`user.dict`、`customphrase` 这一半**一直是空的**（扫错了树）。
+     */
+    private fun engineDir(): File = EngineUserDir.base()
 
     /** 超过这个大小的文件不进包（别把几 MB 的二进制塞进来）。 */
     private const val FILE_MAX = 2 * 1024 * 1024
@@ -285,25 +295,47 @@ object TransferPack {
 
     // ==================== 文件 / 偏好 ====================
 
+    /**
+     * 自定义主题住的**另一个**目录。
+     *
+     * 引擎数据在 `fcitx5-user/`，但主题由 `ThemeFilesManager` 写在
+     * **外部私有目录**（`/sdcard/Android/data/<包名>/files/theme/`）—— 不在 `engineDir()` 里。
+     * 不显式带上，结果就是「换机之后主题全没了」。
+     */
+    private fun themeDir(): File = File(appContext.getExternalFilesDir(null), "theme")
+
+    /**
+     * 两个目录一起打，前缀区分：`f/` = 引擎 · `t/` = 主题。
+     *
+     * 旧包没有前缀 ⇒ 一律当 `f/`，**向后兼容**。
+     */
     private fun dumpFiles(): Pair<JSONObject, Int> {
         val out = JSONObject()
-        val base = engineDir()
-        if (!base.isDirectory) return out to 0
         var n = 0
-        base.walkTopDown().filter { it.isFile && it.length() <= FILE_MAX }.forEach {
-            out.put(it.relativeTo(base).path, Base64.encodeToString(it.readBytes(), Base64.NO_WRAP))
-            n++
+        for ((prefix, base) in listOf("f/" to engineDir(), "t/" to themeDir())) {
+            if (!base.isDirectory) continue
+            base.walkTopDown().filter { it.isFile && it.length() <= FILE_MAX }.forEach {
+                out.put(prefix + it.relativeTo(base).path, Base64.encodeToString(it.readBytes(), Base64.NO_WRAP))
+                n++
+            }
         }
         return out to n
     }
 
     private fun restoreFiles(obj: JSONObject?): Int {
         if (obj == null) return 0
-        val base = engineDir().apply { mkdirs() }
+        engineDir().mkdirs()
+        themeDir().mkdirs()
         var n = 0
         obj.keys().forEach { rel ->
             runCatching {
-                val f = File(base, rel)
+                val prefix = when {
+                    rel.startsWith("t/") -> "t/"
+                    rel.startsWith("f/") -> "f/"
+                    else -> ""
+                }
+                val base = if (prefix == "t/") themeDir() else engineDir()
+                val f = File(base, rel.removePrefix(prefix))
                 f.parentFile?.mkdirs()
                 f.writeBytes(Base64.decode(obj.getString(rel), Base64.NO_WRAP))
                 n++

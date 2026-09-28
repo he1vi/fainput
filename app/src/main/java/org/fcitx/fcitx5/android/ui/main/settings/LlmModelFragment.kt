@@ -123,7 +123,7 @@ class LlmModelFragment : PaddingPreferenceFragment() {
                 }
             })
             catActions.addPreference(Preference(context).apply {
-                title = "删除导入的模型"
+                title = "删除模型"
                 setOnPreferenceClickListener {
                     val n = LlmModel.removeImported()
                     LlmNative.release()

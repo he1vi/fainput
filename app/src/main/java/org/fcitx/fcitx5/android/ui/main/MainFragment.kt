@@ -135,11 +135,10 @@ class MainFragment : PaddingPreferenceFragment() {
                     R.drawable.ic_baseline_emoji_symbols_24,
                     SettingsRoute.Symbol
                 )
-                addDestinationPreference(
-                    R.string.plugins,
-                    R.drawable.ic_baseline_android_24,
-                    SettingsRoute.Plugin
-                )
+                // 【fainput】原「插件」（`R.string.plugins` → `SettingsRoute.Plugin`）入口**已去掉**。
+                //   它管的是**独立 APK 插件**（外掛程式），跟「附加元件」（fcitx5 的 .so 模块）是两回事。
+                //   设备上没装任何插件 APK ⇒ 那一页本来就是空的。
+                //   页面代码保留：以后真要装插件 APK，把这一项加回来即可。
                 addDestinationPreference(
                     R.string.advanced,
                     R.drawable.ic_baseline_more_horiz_24,

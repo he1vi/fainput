@@ -58,6 +58,7 @@ import org.fcitx.fcitx5.android.core.SubtypeManager
 import org.fcitx.fcitx5.android.daemon.FcitxConnection
 import org.fcitx.fcitx5.android.daemon.FcitxDaemon
 import org.fcitx.fcitx5.android.data.InputFeedbacks
+import org.fcitx.fcitx5.android.data.insight.InsightRecorder
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreferenceProvider
@@ -96,6 +97,9 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
     private var lastMetaState: Int = 0
 
     private lateinit var pkgNameCache: PackageNameCache
+
+    /** 【fainput】当前正在输入的 App 包名，由 [onBindInput] 更新，供数据层使用。 */
+    private var currentPkgName: String = "unknown"
 
     private lateinit var decorView: View
     private lateinit var contentView: FrameLayout
@@ -230,6 +234,9 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
     }
 
     private fun handleFcitxEvent(event: FcitxEvent<*>) {
+        // 【fainput】旁路采集：只做累加，不碰数据库，不影响打字。
+        // 必须放在 when 之前，否则 CommitStringEvent 分支会提前 return 掉。
+        InsightRecorder.onFcitxEvent(event)
         when (event) {
             is FcitxEvent.CommitStringEvent -> {
                 commitText(event.data.text, event.data.cursor)
@@ -676,6 +683,7 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
     override fun onBindInput() {
         val uid = currentInputBinding.uid
         val pkgName = pkgNameCache.forUid(uid)
+        currentPkgName = pkgName
         Timber.d("onBindInput: uid=$uid pkg=$pkgName")
         postFcitxJob {
             // ensure InputContext has been created before focusing it
@@ -725,6 +733,8 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
     }
 
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
+        // 【fainput】通知数据层：输入框变了。密码框判定在这里完成。
+        InsightRecorder.onStartInput(currentPkgName, attribute)
         // update selection as soon as possible
         // sometimes when restarting input, onUpdateSelection happens before onStartInput, and
         // initialSel{Start,End} is outdated. but it's the client app's responsibility to send
@@ -1065,6 +1075,8 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     override fun onFinishInput() {
         Timber.d("onFinishInput")
+        // 【fainput】结束当前采集会话（写 endTime）
+        InsightRecorder.onFinishInput()
         postFcitxJob {
             focus(false)
         }

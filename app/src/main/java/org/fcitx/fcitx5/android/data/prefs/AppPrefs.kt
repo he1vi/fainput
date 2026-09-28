@@ -148,8 +148,11 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             false
         )
 
+        // 【fainput / F 阶段】**默认开**。
+        // 表盘上那个「麦克风」= 切到系统语音输入法 —— **零新增权限**
+        // （录音是那个输入法干的，不是我们）。想关掉在「键盘」里。
         val showVoiceInputButton =
-            switch(R.string.show_voice_input_button, "show_voice_input_button", false)
+            switch(R.string.show_voice_input_button, "show_voice_input_button", true)
         val preferredVoiceInput = voiceInputPreference(
             R.string.preferred_voice_input, "preferred_voice_input", ""
         ) { showVoiceInputButton.getValue() }

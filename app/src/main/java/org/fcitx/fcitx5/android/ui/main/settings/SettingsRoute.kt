@@ -100,6 +100,10 @@ sealed class SettingsRoute : Parcelable {
     @Serializable
     data object ClipboardHistory : SettingsRoute()
 
+    /** 【fainput / H】备份 —— 导出 / 导入 / 清空（加密整机转移包） */
+    @Serializable
+    data object Transfer : SettingsRoute()
+
     /**
      * 【fainput / L3】模型页。
      *
@@ -244,6 +248,9 @@ sealed class SettingsRoute : Parcelable {
             }
             fragment<LlmModelFragment, LlmModel> {
                 label = "模型"
+            }
+            fragment<TransferFragment, Transfer> {
+                label = "备份"
             }
             fragment<SymbolSettingsFragment, Symbol> {
                 label = ctx.getString(R.string.emoji_and_symbols)

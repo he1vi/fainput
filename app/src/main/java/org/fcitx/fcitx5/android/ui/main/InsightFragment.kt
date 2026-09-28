@@ -223,6 +223,16 @@ class InsightFragment : PaddingPreferenceFragment() {
                     setOnPreferenceClickListener { confirmWipe(); true }
                 }
                 addPreference(pWipe)
+
+                // 【fainput / H】加密整机转移包 —— 三条原则里「**数据能带走**」那一条。
+                // 换机时一次搬完：学过的词 / 搭配 / 统计 / 引擎自订字词 / 设置。
+                Preference(context).apply {
+                    setup("备份", "")
+                    setOnPreferenceClickListener {
+                        navigateWithAnim(SettingsRoute.Transfer)
+                        true
+                    }
+                }.also { addPreference(it) }
             }
         }
     }

@@ -4,14 +4,13 @@
  */
 package org.fcitx.fcitx5.android.ui.main.settings.behavior
 
-import android.content.ClipData
+import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
 import android.widget.EditText
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.Preference
@@ -20,7 +19,7 @@ import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
 import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardRow
 import org.fcitx.fcitx5.android.ui.common.PaddingPreferenceFragment
-import org.fcitx.fcitx5.android.utils.clipboardManager
+import org.fcitx.fcitx5.android.ui.main.ClipboardTextViewerActivity
 import org.fcitx.fcitx5.android.utils.str
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -174,17 +173,13 @@ class ClipboardHistoryFragment : PaddingPreferenceFragment() {
             if (r.sensitive) append(" · 敏感")
         }
         setOnPreferenceClickListener {
-            copyWhole(r)
+            // 【用户要求】点一行 = **打开查看**，不再是直接复制。
+            // 查看器里能看全文、能选中某一段精确复制、也能一键复制全部。
+            startActivity(
+                Intent(requireContext(), ClipboardTextViewerActivity::class.java)
+                    .putExtra(ClipboardTextViewerActivity.EXTRA_ID, r.id)
+            )
             true
-        }
-    }
-
-    /** 点一条：**这时才按 id 取全文**，复制到系统剪贴板。 */
-    private fun copyWhole(r: ClipboardRow) {
-        lifecycleScope.launch {
-            val full = runCatching { ClipboardManager.textOf(r.id) }.getOrNull() ?: r.preview
-            requireContext().clipboardManager.setPrimaryClip(ClipData.newPlainText("", full))
-            Toast.makeText(requireContext(), "已复制 ${full.length} 字", Toast.LENGTH_SHORT).show()
         }
     }
 

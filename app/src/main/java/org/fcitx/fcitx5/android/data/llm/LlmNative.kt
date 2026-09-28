@@ -44,6 +44,20 @@ object LlmNative {
     private external fun modelParams(): Long
     private external fun unload()
 
+    /**
+     * 跑一次生成，返回生成的文本（空串 = 失败）。
+     *
+     * ⚠️ **必须在后台线程调** —— 0.5B 模型生成 60 个 token 也要几秒。
+     */
+    private external fun generate(
+        prompt: String,
+        maxTokens: Int,
+        temperature: Float,
+        topK: Int,
+        topP: Float,
+        seed: Int,
+    ): String
+
     // ---- 下面是安全包装（永不抛、永不崩）----
 
     /** APK 里有没有把 llama.cpp 真的编进来。 */
@@ -80,6 +94,38 @@ object LlmNative {
 
     fun release() {
         if (linked) runCatching { unload() }
+    }
+
+    /**
+     * 安全的生成入口 —— 模型没加载 / 任何一步出岔子都返回 `null`，**永不抛**。
+     *
+     * ⚠️ **必须在后台线程调**（一次生成几秒到几十秒）。
+     */
+    fun generateText(
+        prompt: String,
+        maxTokens: Int = 256,
+        temperature: Float = 0.7f,
+        topK: Int = 40,
+        topP: Float = 0.9f,
+        seed: Int = 0,
+    ): String? = when {
+        !linked -> null
+        else -> runCatching { generate(prompt, maxTokens, temperature, topK, topP, seed) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Qwen2.5 的对话模板（ChatML）。
+     *
+     * 本来该调 llama.cpp 的 `llama_chat_apply_template`，但那个函数在 `common` 库里 ——
+     * 我们为了减体积把 `LLAMA_BUILD_COMMON` 关了。
+     * 手写反而更稳：这个模板是死的，而且我们已经把模型锁死了。
+     */
+    fun chatml(system: String, user: String): String = buildString {
+        append("<|im_start|>system\n").append(system).append("<|im_end|>\n")
+        append("<|im_start|>user\n").append(user).append("<|im_end|>\n")
+        append("<|im_start|>assistant\n")
     }
 
     /** 给日志用的一句话状态。 */

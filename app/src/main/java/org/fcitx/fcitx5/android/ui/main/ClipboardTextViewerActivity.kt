@@ -5,14 +5,20 @@
 package org.fcitx.fcitx5.android.ui.main
 
 import android.app.Activity
+import android.content.ClipData
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.ViewGroup
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
@@ -69,7 +75,27 @@ class ClipboardTextViewerActivity : Activity() {
         }
         adapter = ChunkAdapter()
         list.adapter = adapter
-        setContentView(list)
+
+        // 【用户要求】要能「全部复制」。
+        // 这是个裸 Activity（没有 ActionBar），菜单项没地方挂 ——
+        // 直接在最上面放一个按钮，比藏进菜单更好找。
+        val copyAll = Button(this).apply {
+            text = "复制全部"
+            setOnClickListener { copyAllToClipboard() }
+        }
+        setContentView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(
+                    copyAll,
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                )
+                addView(
+                    list,
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+                )
+            }
+        )
 
         scope.launch {
             total = runCatching { ClipboardManager.textLength(entryId) }.getOrNull() ?: 0
@@ -78,6 +104,45 @@ class ClipboardTextViewerActivity : Activity() {
             chunks.clear()
             repeat(n) { chunks.add(null) }
             adapter.notifyDataSetChanged()
+        }
+    }
+
+    /**
+     * 把**整篇**复制到系统剪贴板。
+     *
+     * 走**分块读**而不是 `textOf(id)`：后者会把整篇一次性拉进内存，
+     * 一本小说的量级就是几十 MB 的单次分配。
+     * （拼出来的字符串和原文一样大 —— 剪贴板本来就要完整内容 ——
+     *   但峰值可控，而且拼的过程在 IO 线程。）
+     *
+     * 另外：每个块都 `setTextIsSelectable(true)`，所以**精确复制某一段**
+     * 直接在里面长按选中就行，不用另做功能。
+     */
+    private fun copyAllToClipboard() {
+        if (entryId < 0) return
+        scope.launch {
+            val full = withContext(Dispatchers.IO) {
+                val sb = StringBuilder()
+                var offset = 1                       // ⚠️ SQLite 的 substr 是 1-based
+                while (true) {
+                    val chunk = runCatching {
+                        ClipboardManager.textChunk(entryId, offset, CHUNK)
+                    }.getOrNull() ?: break
+                    if (chunk.isEmpty()) break
+                    sb.append(chunk)
+                    offset += chunk.length
+                }
+                sb.toString()
+            }
+            if (full.isEmpty()) {
+                Toast.makeText(this@ClipboardTextViewerActivity, "没有内容", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            getSystemService(android.content.ClipboardManager::class.java)
+                ?.setPrimaryClip(ClipData.newPlainText("", full))
+            Toast.makeText(
+                this@ClipboardTextViewerActivity, "已复制 ${full.length} 字", Toast.LENGTH_SHORT
+            ).show()
         }
     }
 

@@ -122,7 +122,18 @@ class InsightFragment : PaddingPreferenceFragment() {
                 pLevels = info("分级", "—")
             }
 
-            catWords = PreferenceCategory(context).apply { setTitle("最常用的词") }
+            catWords = PreferenceCategory(context).apply {
+                setTitle("最常用的词")
+                // 【用户要求】**折叠起来**：默认收起，点标题那行才展开。
+                // （androidx.preference 1.2.0+ 的 isCollapsible / isInitiallyExpanded，
+                //   本项目用的是 1.2.1。）
+                //
+                // ⚠️ 和 renderWords() 的实时刷新共存没问题：那边是 removeAll() + 重新添加，
+                //    而 androidx 在 addPreference 时会把折叠状态**传播给新子项** ——
+                //    所以每打一个字刷新一次，也不会把收起的列表弹开。
+                isCollapsible = true
+                isInitiallyExpanded = false
+            }
             addPreference(catWords)
 
             // ============ 【D-2 / D-3】词库 · 屏蔽 · 纠错 ============

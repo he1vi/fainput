@@ -89,6 +89,14 @@ interface ClipboardDao {
     suspend fun textLength(id: Int): Int?
 
     /**
+     * 历史的总字符数 —— 磁盘安全阀用。
+     *
+     * `SUM(LENGTH(...))` 在 SQLite 侧求和，**不把内容搬进内存**。
+     */
+    @Query("SELECT IFNULL(SUM(LENGTH(text)), 0) FROM ${ClipboardEntry.TABLE_NAME} WHERE deleted=0")
+    suspend fun totalTextChars(): Long
+
+    /**
      * 分块读全文 —— 超长文本**懒加载**的基础。
      *
      * 一次只取 [len] 个字，从 [offset] 开始。想看下一屏就再取一块。

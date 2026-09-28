@@ -88,6 +88,14 @@ class LlmModelFragment : PaddingPreferenceFragment() {
                 }
             })
             catActions.addPreference(Preference(context).apply {
+                title = "试跑一句"
+                summary = "让它写一句话 —— 这才是「整条链路都对」的证据"
+                setOnPreferenceClickListener {
+                    trialRun()
+                    true
+                }
+            })
+            catActions.addPreference(Preference(context).apply {
                 title = "释放模型"
                 setOnPreferenceClickListener {
                     LlmNative.release()
@@ -166,6 +174,49 @@ class LlmModelFragment : PaddingPreferenceFragment() {
                 "✅ $desc · ${params}M 参数 · ${mb} MB"
             } else {
                 "❌ $err"
+            }
+            render()
+        }
+    }
+
+    /**
+     * 试跑一次生成。
+     *
+     * 为什么必须有这个按钮：**「能载入」只证明模型文件没坏**，
+     * 而「能生成」才证明 tokenize → decode → 采样 → detokenize **整条链路都对**。
+     * 中间任何一环写错，表现都是"载入成功但什么都不输出" —— 那种失败最难查。
+     */
+    private fun trialRun() {
+        when {
+            !LlmNative.isAvailable -> {
+                toast("后端未编入（这个 APK 没带 llama.cpp）")
+                return
+            }
+
+            LlmModel.current() == null -> {
+                toast("没有模型文件 —— 先用 model_mode=artifact 构建并导入")
+                return
+            }
+        }
+        pLoaded.summary = "正在生成…（0.5B 模型大概几秒到几十秒）"
+        lifecycleScope.launch {
+            val out = withContext(Dispatchers.IO) {
+                // 还没载入就先载入（幂等）
+                if (LlmNative.describe().isEmpty()) {
+                    LlmModel.current()?.let { LlmNative.loadModel(it.absolutePath) }
+                }
+                LlmNative.generateText(
+                    LlmNative.chatml(
+                        "你是输入法的后台助手。只用一句中文回答，不要解释。",
+                        "用一句话说明：一个数据不出设备的输入法，对用户意味着什么？"
+                    ),
+                    maxTokens = 64
+                )
+            }
+            loadedDesc = if (out == null) {
+                "❌ 生成失败（细节看 logcat 的 fainput-llm）"
+            } else {
+                "✅ $out"
             }
             render()
         }

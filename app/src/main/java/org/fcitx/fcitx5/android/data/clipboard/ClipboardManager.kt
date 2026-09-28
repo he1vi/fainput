@@ -235,17 +235,47 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         }
     }
 
+    /**
+     * 历史文本总量的**安全阀**（字符数）。
+     *
+     * 20,000,000 字 ≈ 40MB —— 正常打字几辈子也到不了；
+     * 但"反复复制整本小说"会到。留着它，是为了让"永久保存"不至于
+     * 变成"永久涨磁盘"。
+     */
+    private const val HISTORY_CHAR_BUDGET = 20_000_000L
+
+    /**
+     * 裁剪历史。
+     *
+     * ## 【fainput 用户要求】历史**永久保存**
+     *
+     * 上游规则是「超过 N 条就删旧的」，而 N 默认只有 **10** ——
+     * 用户看到的现象就是"历史会消失"。
+     *
+     * 现在改成**两道安全阀，正常使用都不触发**：
+     *
+     * | 闸 | 阈值 | 什么时候才管得着 |
+     * |---|---|---|
+     * | 条数 | `clipboardHistoryLimit`（默认已 10 → **500**）| 攒够 500 条以上 |
+     * | **总字符数** | [HISTORY_CHAR_BUDGET] | 有人反复复制整本小说 |
+     *
+     * **置顶的条目两闸都不管**（置顶 = 明确说"别删它"）。
+     *
+     * ⚠️ 这里是**软删除**（`markAsDeleted`）—— 真正的 DELETE 只在
+     *    「清空全部」→ `realDelete()` 时才发生。所以即使触发了安全阀，
+     *    也还有反悔的余地。
+     */
     private suspend fun removeOutdated() {
         val limit = limitPref.getValue()
         val unpinned = clbDao.getAllUnpinned()
-        if (unpinned.size > limit) {
-            // the last one we will keep
-            val last = unpinned
-                .sortedBy { it.id }
-                .getOrNull(unpinned.size - limit)
-            // delete all unpinned before that, or delete all when limit <= 0
-            clbDao.markUnpinnedAsDeletedEarlierThan(last?.timestamp ?: System.currentTimeMillis())
-        }
+        val tooMany = unpinned.size > limit
+        val tooBig = clbDao.totalTextChars() > HISTORY_CHAR_BUDGET
+        if (!tooMany && !tooBig) return
+        // 保留最近 limit 条，比它更早的全部软删
+        val last = unpinned
+            .sortedBy { it.id }
+            .getOrNull(unpinned.size - limit)
+        clbDao.markUnpinnedAsDeletedEarlierThan(last?.timestamp ?: System.currentTimeMillis())
     }
 
 }

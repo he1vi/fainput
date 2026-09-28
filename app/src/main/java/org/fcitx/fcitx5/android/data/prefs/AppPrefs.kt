@@ -336,7 +336,13 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
         val clipboardHistoryLimit = int(
             R.string.clipboard_limit,
             "clipboard_limit",
-            10,
+            // 【fainput 用户要求】**历史要永久保存**。
+            // 上游默认是 10 —— 只留 10 条，旧的就被软删了，
+            // 用户看到的现象就是"历史会消失"。
+            //
+            // 500 条对正常使用等于永久（外加 ClipboardManager 里那道
+            // 总字符数安全阀兜着极端情况）。
+            500,
         ) { clipboardListening.getValue() }
         val clipboardSuggestion = switch(
             R.string.clipboard_suggestion, "clipboard_suggestion", true

@@ -224,7 +224,9 @@ class InsightFragment : PaddingPreferenceFragment() {
             val avg = if (w.indexCount > 0)
                 String.format(Locale.US, "%.1f", w.indexSum.toDouble() / w.indexCount)
             else "—"
-            val p = Preference(context).apply {
+            // Fragment.context 是 Context?（可空），Preference 要非空 —— 用 requireContext()
+            // 这里是 STARTED 状态下的订阅，Fragment 一定已附着，所以不会抛。
+            val p = Preference(requireContext()).apply {
                 setup("${w.word}   ×${w.count}", "平均选到第 $avg 个候选")
                 isSelectable = false
             }

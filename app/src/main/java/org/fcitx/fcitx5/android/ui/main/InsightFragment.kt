@@ -124,15 +124,22 @@ class InsightFragment : PaddingPreferenceFragment() {
 
             catWords = PreferenceCategory(context).apply {
                 setTitle("最常用的词")
-                // 【用户要求】**折叠起来**：默认收起，点标题那行才展开。
-                // （androidx.preference 1.2.0+ 的 isCollapsible / isInitiallyExpanded，
-                //   本项目用的是 1.2.1。）
+                // 【用户要求】**折叠起来**：默认收起，点「展开」才看全部。
                 //
-                // ⚠️ 和 renderWords() 的实时刷新共存没问题：那边是 removeAll() + 重新添加，
-                //    而 androidx 在 addPreference 时会把折叠状态**传播给新子项** ——
-                //    所以每打一个字刷新一次，也不会把收起的列表弹开。
-                isCollapsible = true
-                isInitiallyExpanded = false
+                // ⚠️ 没有 `isCollapsible` / `isInitiallyExpanded` 这两个属性 ——
+                //    它们在 androidx.preference 里**根本不存在**。我凭印象写过一次，
+                //    构建 #14 就是被它拦下的（`Unresolved reference 'isCollapsible'`）。
+                //
+                //    真 API 在 PreferenceGroup 上，语义是"这个组默认最多先露几个孩子"：
+                //    0 = 全收起，适配器会自动补一个「展开」按钮。
+                //    （PreferenceGroupAdapter:253 是**按每个组自己的计数**递归判断的
+                //      ⇒ 这是真正的单类目折叠，不是整屏折叠。已对着 1.2.1 的 aar 核过。）
+                //
+                // ⚠️ 源码硬要求：设了非 MAX_VALUE 的计数，这个组**必须有 key**
+                //    （setInitialExpandedChildrenCount 里那句 Log.e），否则日志报错、
+                //    且展开状态按 key 存不回来。
+                key = "fainput_insight_words"
+                setInitialExpandedChildrenCount(0)
             }
             addPreference(catWords)
 

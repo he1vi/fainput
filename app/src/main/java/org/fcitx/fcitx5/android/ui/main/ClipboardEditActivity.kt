@@ -64,8 +64,11 @@ class ClipboardEditActivity : Activity() {
      * ⚠️ 注意"分块 append 到 EditText"**不是**解法 —— 那是 **O(n²)**
      *    （每次 append 都重排全文），比一次 setText 还糟。
      *    超长的一律交给 [ClipboardTextViewerActivity]：每块一个 View，滚动到哪加载到哪。
+     *
+     * （写成 `val` 而不是 `const val`：`const` 只允许出现在**顶层或 companion object**，
+     *   而这个类只有一个实例，不值得为它单开一个 companion。）
      */
-    private const val FULL_LOAD_LIMIT = 100_000
+    private val FULL_LOAD_LIMIT = 100_000
 
     private fun setEntry(entry: ClipboardEntry) {
         entryId = entry.id

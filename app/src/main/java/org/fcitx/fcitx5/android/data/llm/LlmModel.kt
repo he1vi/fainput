@@ -44,7 +44,7 @@ object LlmModel {
     private const val EXT = ".gguf"
 
     /** 解压/导入后的落点。 */
-    fun dir(): File = File(appContext.filesDir, "llm").apply { it.mkdirs() }
+    fun dir(): File = File(appContext.filesDir, "llm").apply { mkdirs() }
 
     /**
      * 现在能用的模型文件。

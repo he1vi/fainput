@@ -137,6 +137,11 @@ if(EXISTS "${FAINPUT_LLAMA_DIR}/CMakeLists.txt")
     # 静态链进 native-llm，不在 APK 里多塞几个 .so
     set(FAINPUT_SHARED_BACKUP ${BUILD_SHARED_LIBS})
     set(BUILD_SHARED_LIBS OFF)
+    # 静态库要被链进共享库，必须带 PIC。
+    # Android 工具链本来就是 ON，这里显式钉一遍 —— 否则一旦哪天变 OFF，
+    # 报出来的会是 "relocation ... can not be used when making a shared object"
+    # 这种要查半天的链接错误。
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
     # EXCLUDE_FROM_ALL：llama.cpp 自己的 install 规则不要进来
     # （否则它的头文件和静态库会被打进 APK 的 assets）
     add_subdirectory(${FAINPUT_LLAMA_DIR} "${CMAKE_CURRENT_BINARY_DIR}/llama.cpp" EXCLUDE_FROM_ALL)

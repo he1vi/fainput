@@ -31,15 +31,30 @@ import org.fcitx.fcitx5.android.ui.common.PaddingPreferenceFragment
  * | 装上了 | 可能没有内置模型（`model_mode=none` 构建的） |
  * | 有模型文件 | 可能是半个文件（下载中断） |
  *
- * ⇒ 所以这一页把**后端 / 模型文件 / 是否真能载入**三件事分开显示，
- * 而不是笼统给一个"LLM 可用"。**能载入才算数。**
+ * ⇒ 所以这一页把**后端 / 模型文件 / 是否真能载入**三件事分开显示。
+ * **能载入才算数。**
  *
  * ## 两条路，一份代码
  *
- * - 内置（定版 APK）：首启解压到私有目录，这里显示"内置"
+ * - 内置（定版 APK）：首启解压到私有目录
  * - 导入（平时）：用系统文件选择器挑一个 `.gguf`
  *
  * 上层只认一个 `File` —— 页面逻辑只有一套。
+ *
+ * ## ⚠️ 状态**现算**，绝不存字段
+ *
+ * 踩过的坑：把"已载入"的真相存进 Fragment 字段 ⇒ 退出重进就显示"未载入"，
+ * 用户看到的是"**模型不见了**"（其实文件一直在 `files/llm/`，丢的只是内存里那个实例）。
+ *
+ * **Fragment 会被销毁重建，native 静态状态不会。** 所以：
+ *
+ * | 问什么 | 问谁 |
+ * |---|---|
+ * | 后端编进来没 | `LlmNative.isAvailable` |
+ * | 模型文件在不在 | `LlmModel.current()`（扫磁盘）|
+ * | 载入了没 | `LlmNative.describe()`（空串 = 没载入）|
+ *
+ * 再加上 `onResume` 里一次**自动载回** —— 于是"退出重进"看到的就是"已载入"。
  */
 class LlmModelFragment : PaddingPreferenceFragment() {
 
@@ -47,9 +62,14 @@ class LlmModelFragment : PaddingPreferenceFragment() {
     private lateinit var pModel: Preference
     private lateinit var pBackend: Preference
     private lateinit var pLoaded: Preference
+    private lateinit var pResult: Preference
     private lateinit var catActions: PreferenceCategory
 
-    private var loadedDesc: String = ""
+    /** 上次「测试」跑出来的句子 / 报错。**只放结果**，不放"模型在不在"。 */
+    private var lastResult: String = ""
+
+    /** 正在后台载入 —— 防止 `onResume` 重复触发。 */
+    private var loading: Boolean = false
 
     /** 系统文件选择器。`.gguf` 没有注册 mime，只能放宽到所有文件。 */
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -64,16 +84,17 @@ class LlmModelFragment : PaddingPreferenceFragment() {
             pBackend = infoRow("推理后端")
             pModel = infoRow("模型文件")
             pLoaded = infoRow("已载入")
+            pResult = infoRow("结果")
             catState.addPreference(pBackend)
             catState.addPreference(pModel)
             catState.addPreference(pLoaded)
+            catState.addPreference(pResult)
 
             catActions = PreferenceCategory(context).apply { title = "操作" }
             addPreference(catActions)
 
             catActions.addPreference(Preference(context).apply {
                 title = "导入模型"
-                summary = "选一个 .gguf（没有内置模型时用）"
                 setOnPreferenceClickListener {
                     picker.launch(arrayOf("*/*"))
                     true
@@ -81,15 +102,13 @@ class LlmModelFragment : PaddingPreferenceFragment() {
             })
             catActions.addPreference(Preference(context).apply {
                 title = "载入模型"
-                summary = "后台线程加载，可能要几秒"
                 setOnPreferenceClickListener {
-                    loadModel()
+                    loadModel(manual = true)
                     true
                 }
             })
             catActions.addPreference(Preference(context).apply {
-                title = "试跑一句"
-                summary = "让它写一句话 —— 这才是「整条链路都对」的证据"
+                title = "测试"
                 setOnPreferenceClickListener {
                     trialRun()
                     true
@@ -99,22 +118,17 @@ class LlmModelFragment : PaddingPreferenceFragment() {
                 title = "释放模型"
                 setOnPreferenceClickListener {
                     LlmNative.release()
-                    loadedDesc = ""
                     render()
                     true
                 }
             })
             catActions.addPreference(Preference(context).apply {
                 title = "删除导入的模型"
-                summary = "内置的那个不受影响"
                 setOnPreferenceClickListener {
                     val n = LlmModel.removeImported()
                     LlmNative.release()
-                    loadedDesc = ""
                     render()
-                    android.widget.Toast.makeText(
-                        context, "已删除 $n 个文件", android.widget.Toast.LENGTH_SHORT
-                    ).show()
+                    toast("已删除 $n 个文件")
                     true
                 }
             })
@@ -125,6 +139,9 @@ class LlmModelFragment : PaddingPreferenceFragment() {
     override fun onResume() {
         super.onResume()
         render()
+        // 回到这一页就把模型载回来 —— **载入过的东西不该"退出重进就没了"。**
+        // （模型文件一直躺在 files/llm/，丢的只是内存里那个实例。）
+        autoLoad()
     }
 
     private fun infoRow(title: String): Preference = Preference(requireContext()).apply {
@@ -132,73 +149,84 @@ class LlmModelFragment : PaddingPreferenceFragment() {
         isSelectable = false
     }
 
+    /** 状态一律**现算**：后端问 native，模型文件问磁盘，载入状态问 native。 */
     private fun render() {
-        // ① 后端：llama.cpp 到底编进来没有
         pBackend.summary = if (LlmNative.isAvailable) {
             LlmNative.systemInfoText().take(60)
         } else {
-            "未编入（这个 APK 是用 model_mode=none 之类构建的，或者拉取 llama.cpp 失败）"
+            "未编入"
         }
-        // ② 模型文件：磁盘上有没有
-        val file = LlmModel.current()
-        pModel.summary = if (file == null) {
-            "没有。可以「导入模型」，或者用 model_mode=bundle 重新构建一个内置模型的版本。"
-        } else {
-            "${file.name} · ${file.length() / 1024 / 1024} MB"
+        pModel.summary = LlmModel.current()?.let {
+            "${it.name} · ${it.length() / 1024 / 1024} MB"
+        } ?: "没有"
+        pLoaded.summary = when {
+            loading -> "载入中…"
+            LlmNative.describe().isEmpty() -> "未载入"
+            else -> {
+                val mb = LlmNative.sizeBytes() / 1024 / 1024
+                val params = LlmNative.paramCount() / 1_000_000
+                "${LlmNative.describe()} · ${params}M 参数 · ${mb} MB"
+            }
         }
-        // ③ 已载入：**这才是"能不能用"的唯一证据**
-        pLoaded.summary = if (loadedDesc.isNotEmpty()) {
-            loadedDesc
-        } else {
-            "未载入"
-        }
+        pResult.summary = lastResult.ifEmpty { "—" }
     }
 
-    private fun loadModel() {
+    /**
+     * 磁盘上有模型、内存里没载入 ⇒ **自动载入一次**。
+     *
+     * 这就是"退出重进还是已载入"的原因。
+     * 幂等：已经载入 / 正在载入 / 没文件，都是空操作。
+     */
+    private fun autoLoad() {
+        if (loading) return
+        if (!LlmNative.isAvailable) return
+        if (LlmNative.describe().isNotEmpty()) return
+        if (LlmModel.current() == null) return
+        loadModel(manual = false)
+    }
+
+    /** [manual] = 用户点的（失败要弹提示）；自动载入静默失败。 */
+    private fun loadModel(manual: Boolean) {
         val file = LlmModel.current()
         if (file == null) {
-            toast("没有模型文件")
+            if (manual) toast("没有模型文件")
             return
         }
-        val ctx = requireContext()
+        loading = true
+        render()
         lifecycleScope.launch {
             val err = withContext(Dispatchers.IO) {
                 // 内置的还没解压就先解压（幂等）
                 LlmModel.ensureExtracted()
                 LlmNative.loadModel(file.absolutePath)
             }
-            loadedDesc = if (err == null) {
-                val desc = LlmNative.describe()
-                val mb = LlmNative.sizeBytes() / 1024 / 1024
-                val params = LlmNative.paramCount() / 1_000_000
-                "✅ $desc · ${params}M 参数 · ${mb} MB"
-            } else {
-                "❌ $err"
-            }
+            loading = false
+            if (err != null) lastResult = "❌ $err"
             render()
         }
     }
 
     /**
-     * 试跑一次生成。
+     * 跑一次生成。
      *
-     * 为什么必须有这个按钮：**「能载入」只证明模型文件没坏**，
-     * 而「能生成」才证明 tokenize → decode → 采样 → detokenize **整条链路都对**。
+     * 「能载入」只证明模型文件没坏；「能生成」才证明
+     * tokenize → decode → 采样 → detokenize **整条链路都对**。
      * 中间任何一环写错，表现都是"载入成功但什么都不输出" —— 那种失败最难查。
      */
     private fun trialRun() {
         when {
             !LlmNative.isAvailable -> {
-                toast("后端未编入（这个 APK 没带 llama.cpp）")
+                toast("后端未编入")
                 return
             }
 
             LlmModel.current() == null -> {
-                toast("没有模型文件 —— 先用 model_mode=artifact 构建并导入")
+                toast("没有模型文件")
                 return
             }
         }
-        pLoaded.summary = "正在生成…（0.5B 模型大概几秒到几十秒）"
+        lastResult = "正在生成…"
+        render()
         lifecycleScope.launch {
             val out = withContext(Dispatchers.IO) {
                 // 还没载入就先载入（幂等）
@@ -213,11 +241,7 @@ class LlmModelFragment : PaddingPreferenceFragment() {
                     maxTokens = 64
                 )
             }
-            loadedDesc = if (out == null) {
-                "❌ 生成失败（细节看 logcat 的 fainput-llm）"
-            } else {
-                "✅ $out"
-            }
+            lastResult = out ?: "❌ 生成失败"
             render()
         }
     }
@@ -225,12 +249,12 @@ class LlmModelFragment : PaddingPreferenceFragment() {
     private fun importModel(uri: Uri) {
         val name = queryName(uri)
         lifecycleScope.launch {
-            toast("正在导入…（大文件要一会儿）")
-            val result = LlmModel.import(uri, name)
-            result.onSuccess {
-                loadedDesc = ""
+            toast("正在导入…")
+            LlmModel.import(uri, name).onSuccess { file ->
+                lastResult = ""
                 render()
-                toast("已导入：${it.name}（${it.length() / 1024 / 1024} MB）")
+                toast("已导入：${file.name}（${file.length() / 1024 / 1024} MB）")
+                loadModel(manual = false)
             }.onFailure {
                 toast("导入失败：${it.message}")
             }

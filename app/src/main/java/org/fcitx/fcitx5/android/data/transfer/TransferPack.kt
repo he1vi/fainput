@@ -41,7 +41,8 @@ import javax.crypto.spec.SecretKeySpec
  * └────────┴─────┴──────────┴────────┴───────────────────────┘
  * ```
  *
- * - 密钥：`PBKDF2WithHmacSHA1`（**不是 SHA256** —— minSdk 23，SHA256 那档要 API 26）+ 20 万次迭代
+ * - 密钥：`PBKDF2WithHmacSHA256`（§11.5 定的）+ 20 万次迭代；
+ *   老设备（API < 26）退回 `PBKDF2WithHmacSHA1`，导入时**两个都试**
  * - GCM 自带认证 ⇒ **密码错 = 解密直接抛异常**，不存在"解出半个文件"
  * - gzip 是为了那 1000 条 `input_event` 不把包撑大（JSON 压缩率很高）
  *
@@ -56,7 +57,7 @@ import javax.crypto.spec.SecretKeySpec
  */
 object TransferPack {
 
-    private const val MAGIC = "FAINPUT1"
+    private const val MAGIC = "FNPUT1"
 
     private const val VERSION = 1
 
@@ -109,6 +110,13 @@ object TransferPack {
 
                 val prefs = dumpPrefs()
                 root.put("prefs", prefs.first)
+                // §11.5 的硬要求：**盐必须一起打包**，否则恢复后 L2 哈希全部失去意义。
+                // 盐住在 SharedPreferences（`SensitiveClassifier.KEY_SALT = "hash_salt"`），
+                // 而上面把 `shared_prefs/*.xml` 全打包了 ⇒ 它跟着走。这里只做**可观测**。
+                Timber.i(
+                    "[transfer] 导出：%d 行 / %d 文件 / %d 偏好，盐随包走：%s",
+                    rows, files.second, prefs.second, if (saltCarried()) "是" else "否"
+                )
 
                 val sealed = seal(gzip(root.toString().toByteArray(Charsets.UTF_8)), passphrase)
                 appContext.contentResolver.openOutputStream(uri)?.use { it.write(sealed) }
@@ -306,6 +314,17 @@ object TransferPack {
 
     private fun prefsDir(): File = File(appContext.filesDir.parentFile, "shared_prefs")
 
+    /**
+     * 盐在不在包里 —— 直接查磁盘上的偏好文件。
+     *
+     * 不去翻编码后的 JSON：值是 base64 的 XML，搜不到明文键名。
+     */
+    private fun saltCarried(): Boolean = runCatching {
+        prefsDir().listFiles()?.any { f ->
+            f.isFile && f.name.endsWith(".xml") && f.readText().contains("hash_salt")
+        } ?: false
+    }.getOrDefault(false)
+
     private fun dumpPrefs(): Pair<JSONObject, Int> {
         val out = JSONObject()
         var n = 0
@@ -354,7 +373,7 @@ object TransferPack {
         val salt = ByteArray(SALT_LEN).also { SecureRandom().nextBytes(it) }
         val iv = ByteArray(IV_LEN).also { SecureRandom().nextBytes(it) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-            init(Cipher.ENCRYPT_MODE, key(passphrase, salt), GCMParameterSpec(TAG_BITS, iv))
+            init(Cipher.ENCRYPT_MODE, sealKey(passphrase, salt), GCMParameterSpec(TAG_BITS, iv))
         }
         val ct = cipher.doFinal(plain)
         return ByteArrayOutputStream().apply {
@@ -373,18 +392,44 @@ object TransferPack {
         val salt = blob.copyOfRange(MAGIC.length + 1, MAGIC.length + 1 + SALT_LEN)
         val iv = blob.copyOfRange(MAGIC.length + 1 + SALT_LEN, head)
         val ct = blob.copyOfRange(head, blob.size)
-        return runCatching {
-            Cipher.getInstance("AES/GCM/NoPadding").run {
-                init(Cipher.DECRYPT_MODE, key(passphrase, salt), GCMParameterSpec(TAG_BITS, iv))
-                doFinal(ct)
+        // 新包是 SHA256 做的；老设备（API < 26）只写得出 SHA1 的包。
+        // 两个都试一遍 —— GCM 带认证，所以"试错"只会干净地失败。
+        for (algo in KEY_ALGOS) {
+            val r = runCatching {
+                Cipher.getInstance("AES/GCM/NoPadding").run {
+                    init(
+                        Cipher.DECRYPT_MODE,
+                        key(passphrase, salt, algo),
+                        GCMParameterSpec(TAG_BITS, iv)
+                    )
+                    doFinal(ct)
+                }
             }
-        }.getOrElse { error("密码不对，或文件损坏") }
+            if (r.isSuccess) return r.getOrThrow()
+        }
+        error("密码不对，或文件损坏")
     }
 
-    private fun key(passphrase: String, salt: ByteArray): SecretKeySpec {
+    /**
+     * 密钥派生算法，**按顺序试**。
+     *
+     * §11.5 定的是 SHA256，但 **minSdk 23** —— `PBKDF2WithHmacSHA256` 要 API 26。
+     * 与其只认一个（要么老机器全崩，要么新包配不上文档），不如两个都留：
+     * 导出优先 SHA256，导入两个都试。
+     */
+    private val KEY_ALGOS = listOf("PBKDF2WithHmacSHA256", "PBKDF2WithHmacSHA1")
+
+    private fun key(passphrase: String, salt: ByteArray, algo: String): SecretKeySpec {
         val spec = PBEKeySpec(passphrase.toCharArray(), salt, ITERATIONS, 256)
-        val raw = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1").generateSecret(spec).encoded
+        val raw = SecretKeyFactory.getInstance(algo).generateSecret(spec).encoded
         return SecretKeySpec(raw, "AES")
+    }
+
+    private fun sealKey(passphrase: String, salt: ByteArray): SecretKeySpec {
+        for (algo in KEY_ALGOS) {
+            runCatching { return key(passphrase, salt, algo) }
+        }
+        return key(passphrase, salt, KEY_ALGOS.last())
     }
 
     // ==================== gzip ====================

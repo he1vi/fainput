@@ -233,6 +233,22 @@ class InsightFragment : PaddingPreferenceFragment() {
                         true
                     }
                 }.also { addPreference(it) }
+
+                // 【fainput / F】输入方式：翻译（本地模型，离线）· 颜文字
+                Preference(context).apply {
+                    setup("翻译", "")
+                    setOnPreferenceClickListener {
+                        navigateWithAnim(SettingsRoute.Translate)
+                        true
+                    }
+                }.also { addPreference(it) }
+                Preference(context).apply {
+                    setup("颜文字", "")
+                    setOnPreferenceClickListener {
+                        navigateWithAnim(SettingsRoute.Kaomoji)
+                        true
+                    }
+                }.also { addPreference(it) }
             }
         }
     }

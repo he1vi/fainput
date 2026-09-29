@@ -44,7 +44,14 @@ add_library(pinyin-customphrase STATIC "${CHINESE_ADDONS_PINYIN_DIR}/customphras
 target_include_directories(pinyin-customphrase INTERFACE "${CHINESE_ADDONS_PINYIN_DIR}")
 target_link_libraries(pinyin-customphrase PRIVATE Fcitx5::Utils LibIME::Core)
 
-add_library(native-lib SHARED native-lib.cpp androidaddonloader/androidaddonloader.cpp)
+add_library(native-lib SHARED
+        native-lib.cpp
+        androidaddonloader/androidaddonloader.cpp
+        # 【fainput / C 层】字符级 LSTM 打分。
+        # 挂在这里而不是 native-llm —— 后者在没有 llama.cpp 源码时会编成桩，
+        # 而 LSTM 推理**不该依赖 llama.cpp**（它连 llama 架构都不是）。
+        lstm/lstm-jni.cpp
+        )
 target_link_libraries(native-lib
         log
         libuv::uv_a

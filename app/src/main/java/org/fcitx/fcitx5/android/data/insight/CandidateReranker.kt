@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.core.FcitxEvent
+import org.fcitx.fcitx5.android.core.FormattedText
 import timber.log.Timber
 import kotlin.math.exp
 
@@ -33,9 +34,12 @@ import kotlin.math.exp
  *
  * | 边界 | 值 | 为什么 |
  * |---|---|---|
- * | **最少见过几次才提升** | [MIN_COUNT] = 3 | 打过一次的词不足以证明"你这人爱用" |
- * | **一次最多提升几个** | [MAX_PROMOTE] = 2 | 全推到前面 = 频繁推荐 = 适得其反 |
+ * | **最少见过几次才提升** | [UserProfile.Snapshot.minCount]（冷启 3，数据厚了降到 2） | 打过一次的词不足以证明"你这人爱用" |
+ * | **一次最多提升几个** | [UserProfile.Snapshot.maxPromote]（冷启 2，最多 4） | 全推到前面 = 频繁推荐 = 适得其反 |
  * | **码长门槛** | [MIN_PREEDIT] = 2 | 打一个字就重排，等于在跟用户抢方向盘 |
+ *
+ * ⚠️ 前两条**不再是这里的常量** —— 它们由 D 层算出的画像决定（见 [UserProfile]）。
+ *    冷启动画像 = 3 / 2，和以前写死的值完全一致。
  *
  * ## 时间衰减（照抄 rime 的思想，不是重造轮子）
  *
@@ -73,11 +77,9 @@ object CandidateReranker {
     private const val PREFS_NAME = "fainput_rerank"
     private const val KEY_ENABLED = "enabled"
 
-    /** 至少提交过这么多次，才够格被提升。 */
-    private const val MIN_COUNT = 3
-
-    /** 一次最多提升几个 —— "要有限度，不然频繁推荐反而适得其反"。 */
-    private const val MAX_PROMOTE = 2
+    // ⚠️ 「至少提交几次才够格」和「一次最多提升几个」**不再写死在这里** ——
+    //    它们现在是 [UserProfile] 画像的一部分（D 层按数据量算出来的）。
+    //    冷启动画像 = 3 / 2，**和以前完全一样** ⇒ 升级不改变现有行为。
 
     /** 预编辑（拼音串）短于这个长度就不重排。 */
     private const val MIN_PREEDIT = 2
@@ -152,6 +154,60 @@ object CandidateReranker {
     private var lastPreeditLength: Int = 0
 
     /**
+     * 【B/C 层】最近一次看到的**码**（拼音串，小写）。
+     *
+     * 两处要用：
+     * - **B 层**：查「码 → 词」和「码 + 错 → 对」两张表
+     * - **C 层**：不是给 LSTM 的（它要的是**中文上文**），只是留着排查用
+     */
+    @Volatile
+    private var lastCode: String = ""
+
+    // ==================== 【ABCD / 边界】引擎门禁 ====================
+
+    /**
+     * 当前输入法是不是"中文拼音系"。
+     *
+     * ## 为什么需要这道门
+     *
+     * 学习数据（`word_stat` / `word_bigram` / 画像）**只在拼音下产生**。
+     * 如果拿到五笔 / 日语 / 英语上去用，就是**跨引擎污染** ——
+     * 中文的词频会去抬日语的候选，而且**用户完全看不出来为什么**。
+     *
+     * ⇒ 不做多语言预测的代价，就是必须有这道门。
+     *    没这道门，"只支持中文"会变成"到处乱插中文候选"。
+     *
+     * ## 判定用 `addon` 而不是 `uniqueName`
+     *
+     * `pinyin` 和 `shuangpin` 是两个 IM，但**同属 pinyin addon**，
+     * 码空间一致，学习数据本来就该共用。
+     * 用 `addon == "pinyin"` 一句话同时覆盖它们，还顺便排除了
+     * `table`（五笔/郑码/电报码）和 `keyboard`（英语）。
+     */
+    @Volatile
+    private var pinyinLike: Boolean = false
+
+    /**
+     * 由 `InputView` 在 `IMChangeEvent` 时调用。
+     *
+     * **切换引擎必须立刻生效** —— 不然用户从拼音切到五笔，
+     * 第一个词就会吃到中文的词频分。
+     */
+    fun setActiveIm(addon: String?, uniqueName: String?) {
+        val a = addon?.trim()?.lowercase() ?: ""
+        val u = uniqueName?.trim()?.lowercase() ?: ""
+        val like = a == "pinyin" || u == "pinyin" || u == "shuangpin"
+        if (like != pinyinLike) {
+            Timber.i("[rerank] 引擎切换：%s（addon=%s）→ 学习层%s", u, a, if (like) "参与" else "不参与")
+        }
+        pinyinLike = like
+    }
+
+    /** 给设置页显示用。 */
+    val isPinyinLike: Boolean
+        get() = pinyinLike
+
+    /**
      * 当前这一屏的「显示下标 → 引擎下标」映射。
      * `null` 表示**没有重排**（原序），此时映射是恒等的。
      */
@@ -178,6 +234,20 @@ object CandidateReranker {
         Timber.i("[rerank] enabled -> %s", value)
     }
 
+    /**
+     * 【ABCD】让词表**立刻失效**，下次重排重新从库里读。
+     *
+     * 为什么必须补这个方法：「清空全部数据」之后，`promote` 里还留着旧词频表，
+     * 而 [maybeRefresh] 有 30 秒节流 —— 这 30 秒内重排会按**已经被删掉的**数据提前候选。
+     * 用户刚点了"清空"，看到的行为却像没清 —— 这是最伤信任的一类 bug。
+     */
+    fun invalidate() {
+        promote = emptyMap()
+        lastLoadAt = 0L
+        perm = null
+        Timber.i("[rerank] 词表已失效（下次重排重新读库）")
+    }
+
     /** 已学会多少个词（给「输入数据」页显示用）。 */
     val learnedWordCount: Int
         get() = promote.size
@@ -190,8 +260,17 @@ object CandidateReranker {
      * 为什么需要它：只有正在拼一个词（preedit 非空）的时候才谈得上"候选"。
      * 空 preedit 时重排毫无意义，还会让候选栏在收起/展开时闪一下。
      */
-    fun onPreeditChanged(length: Int) {
-        lastPreeditLength = length
+    /**
+     * 由 `InputView` 在收到 `InputPanelEvent` 时调用。
+     *
+     * @param preedit **原始**预编辑（**不是**密码遮罩后的版本）——
+     *                B 层要拿这个码去查表。密码框在 `InputView` 那边就
+     *                被 `sensitiveEditor` 拦住了，走不到这儿。
+     */
+    fun onPreeditChanged(preedit: FormattedText) {
+        val text = preedit.strings.joinToString("")
+        lastPreeditLength = text.length
+        lastCode = text.trim().lowercase()
     }
 
     /**
@@ -264,13 +343,25 @@ object CandidateReranker {
         val list = data.candidates
         if (!enabled || list.size < 3) return data
         if (lastPreeditLength < MIN_PREEDIT) return data
+        // 【ABCD / 边界】学习层**只在拼音系引擎上参与**。
+        // 其它引擎（五笔 / 日语 / 英语）直接放行 —— 引擎原序，一个字都不动。
+        if (!pinyinLike) return data
 
         maybeRefresh()
         val scores = promote
         // 【M·L1】词搭配：`上一个上屏的词` 后面常跟哪些词。
-        // 和词频**同一条轴上加**，只抬不降 —— BigramModel 那边已经封了顶。
         val pairs = bigram
         if (scores.isEmpty() && pairs.isEmpty()) return data
+
+        // 【ABCD】画像：A/B/C 三层的权重与边界都从这一份来（无锁读）。
+        val profile = UserProfile.current
+
+        // 【C 层】上文 + 预算重置。
+        // 上下文只设一次 —— native 侧会缓存它的 LSTM 状态，几十个候选共用一份，
+        // 这就是"每个候选只跑自己那几个字"的来源。
+        LstmScorer.setContext(BigramModel.previousWord)
+        LstmScorer.beginBatch()
+
         val now = System.currentTimeMillis()
         val scored = ArrayList<Pair<Int, Double>>(list.size)
         list.forEachIndexed { i, w ->
@@ -278,17 +369,18 @@ object CandidateReranker {
             if (t.isEmpty()) return@forEachIndexed
             val until = suppressed[t]
             if (until != null && until > now) return@forEachIndexed
-            val base = scores[t] ?: 0.0
-            val pair = pairs[t] ?: 0.0
-            // 两边都没分 → 保持引擎原序
-            if (base <= 0.0 && pair <= 0.0) return@forEachIndexed
-            scored += i to (base + pair)
+            // 【ABCD】统一打分：A 统计 + B 个人纠错 + C 神经 → 融合。
+            // 码（`lastCode`）给 B 层查表用。
+            val s = ScoringPipeline.score(t, lastCode, scores, pairs, profile)
+            // 三层全 0 → 这个词我们一无所知，保持引擎原序（不插手）
+            if (s.isZero) return@forEachIndexed
+            scored += i to s.fused
         }
         if (scored.isEmpty()) return data
 
         // 分数高的优先；同分保持引擎原有的先后（稳定）
         scored.sortWith(compareByDescending<Pair<Int, Double>> { it.second }.thenBy { it.first })
-        val front = scored.take(MAX_PROMOTE).map { it.first }
+        val front = scored.take(profile.maxPromote).map { it.first }
 
         // 已经都在最前面 → 不用动
         if (front.withIndex().all { (i, engineIdx) -> i == engineIdx }) return data
@@ -345,8 +437,10 @@ object CandidateReranker {
 
                 val t = System.currentTimeMillis()
                 val map = HashMap<String, Double>(rows.size)
+                // 【ABCD】门槛来自画像，不再写死 —— 数据厚了它会自己降到 2。
+                val minCount = UserProfile.current.minCount
                 rows.forEach { w ->
-                    if (w.count < MIN_COUNT) return@forEach
+                    if (w.count < minCount) return@forEach
                     val text = w.word.trim()
                     // 只要词，不要句子。长度 1 的不进（直通提交的噪音）。
                     if (text.length < 2 || text.length > 12) return@forEach

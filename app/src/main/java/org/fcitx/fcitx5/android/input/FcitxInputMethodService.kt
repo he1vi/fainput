@@ -11,6 +11,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
@@ -631,6 +632,19 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     override fun onConfigureWindow(win: Window, isFullscreen: Boolean, isCandidatesOnly: Boolean) {
         win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        // 【fainput】让主题里的"透明"真的能看见**后面的 App**。
+        //
+        // 之前这里只设了尺寸 ⇒ 键盘透明的地方露出来的是**窗口自己的底**
+        // （`Theme.InputViewTheme` 继承 `DeviceDefault.Settings` 的 windowBackground，
+        //  是个不透明色），而不是键盘后面那个 App。**主题再怎么调都透不过去。**
+        //
+        // 所以窗口这一层要自己让开：
+        //   ① 窗口不画底 —— 半透明才真的透到后面的 App
+        //   ② dimAmount = 0 —— 否则后面那层被系统压暗，看着像蒙了灰
+        //
+        // 不透明主题完全不受影响：它们的 view 本来就把整块盖住了。
+        win.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        win.setDimAmount(0f)
     }
 
     private var inputViewLocation = intArrayOf(0, 0)

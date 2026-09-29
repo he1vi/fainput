@@ -113,6 +113,15 @@ sealed class SettingsRoute : Parcelable {
     @Serializable
     data object LlmModel : SettingsRoute()
 
+    /**
+     * 【fainput / C 层】微 LM 模型页。
+     *
+     * 存在的唯一理由：模型要放进 `filesDir/lstm/`，那是**应用私有目录**，
+     * 非 root 设备上写不进去 —— 没有这一页，"把模型装上去"根本无从下手。
+     */
+    @Serializable
+    data object LstmModel : SettingsRoute()
+
     @Serializable
     data object Developer : SettingsRoute()
 
@@ -248,6 +257,9 @@ sealed class SettingsRoute : Parcelable {
             }
             fragment<LlmModelFragment, LlmModel> {
                 label = "模型"
+            }
+            fragment<LstmModelFragment, LstmModel> {
+                label = "微 LM"
             }
             fragment<TransferFragment, Transfer> {
                 label = "备份"

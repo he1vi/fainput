@@ -21,9 +21,12 @@ import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.data.insight.DeviceState
 import org.fcitx.fcitx5.android.data.insight.BigramModel
 import org.fcitx.fcitx5.android.data.insight.CandidateReranker
+import org.fcitx.fcitx5.android.data.insight.CorrectionScorer
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
+import org.fcitx.fcitx5.android.data.insight.LstmScorer
 import org.fcitx.fcitx5.android.data.insight.PersonalDictionary
+import org.fcitx.fcitx5.android.data.insight.UserProfile
 import org.fcitx.fcitx5.android.data.insight.db.LevelCount
 import org.fcitx.fcitx5.android.data.insight.db.StatsProjection
 import org.fcitx.fcitx5.android.data.insight.db.WordStatEntity
@@ -196,8 +199,16 @@ class InsightFragment : PaddingPreferenceFragment() {
                 // 【fainput / D-1'】候选智能排序的总开关。
                 // 为什么必须给开关：这是唯一一处**会改变用户看到的东西**的功能，
                 // 用户必须能一句话关掉它。关掉 = 完全回到引擎原序。
+                // 【ABCD】摘要里带上**画像档位** —— 让"四层在动"这件事看得见。
+                // 「冷启 / 起步 / 熟练」是 D 层按数据量算出来的（见 UserProfile.derive）：
+                // 档位越高，整句层权重越大、一次动的候选越多。
                 fun rerankText(): String =
-                    if (CandidateReranker.isEnabled) "开 · ${CandidateReranker.learnedWordCount} 词" else "关"
+                    if (CandidateReranker.isEnabled) {
+                        val tier = UserProfile.current.tier.label
+                        "开 · ${CandidateReranker.learnedWordCount} 词 · $tier"
+                    } else {
+                        "关"
+                    }
 
                 val pRerank = Preference(context).apply {
                     setup("候选排序", rerankText())
@@ -208,6 +219,28 @@ class InsightFragment : PaddingPreferenceFragment() {
                     }
                 }
                 addPreference(pRerank)
+
+                // 【ABCD】把四层的状态各露一行 —— 让"整体在动"这件事看得见。
+                // 标题 ≤4 字、摘要只放值（§零.1）。
+                addPreference(Preference(context).apply {
+                    setup("微 LM", LstmScorer.stats())
+                    // 模型得从**系统文件选择器**导进来（filesDir 非 root 写不进），
+                    // 所以这一行必须能点开 —— 否则模型在真机上装不上。
+                    setOnPreferenceClickListener {
+                        navigateWithAnim(SettingsRoute.LstmModel)
+                        true
+                    }
+                })
+                addPreference(Preference(context).apply {
+                    setup("个人纠错", CorrectionScorer.stats())
+                })
+                // D 层的叙述（大模型写的）。没有模型 / 还没跑过就不显示 ——
+                // 空着一行「暂无」比不显示更让人困惑。
+                InsightMaintenance.narrative().takeIf { it.isNotEmpty() }?.let { nar ->
+                    addPreference(Preference(context).apply {
+                        setup("习惯总结", nar)
+                    })
+                }
 
                 pRunNow = Preference(context).apply {
                     setup("立即整理", "")
@@ -546,6 +579,14 @@ class InsightFragment : PaddingPreferenceFragment() {
                         // 否则清空之后，重排还会按旧搭配提前候选。
                         dao.wipeBigrams()
                         BigramModel.clear()
+                        // 【ABCD】重排器的词表也要**立刻**失效。
+                        // 它有 30 秒刷新节流 —— 不清的话，你刚点完"清空"，
+                        // 接下来半分钟候选栏还是按已删除的数据在提前词。
+                        CandidateReranker.invalidate()
+                        // 【ABCD】画像回到冷启动档。
+                        // 否则门槛还停在"熟练"档（minCount=2 / maxPromote=4），
+                        // 拿一张空词表跑最激进的参数，行为会很怪。
+                        UserProfile.reset()
                     }
                 }
             }

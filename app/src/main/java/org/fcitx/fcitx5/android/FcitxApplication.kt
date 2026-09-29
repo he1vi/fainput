@@ -23,7 +23,9 @@ import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
 import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
+import org.fcitx.fcitx5.android.data.insight.LstmScorer
 import org.fcitx.fcitx5.android.data.insight.PersonalDictionary
+import org.fcitx.fcitx5.android.data.insight.UserProfile
 import org.fcitx.fcitx5.android.data.llm.LlmModel
 import org.fcitx.fcitx5.android.data.llm.LlmNative
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
@@ -159,6 +161,13 @@ class FcitxApplication : Application() {
         InsightRecorder.init(ctx)
         // 【fainput / D-1'】候选重排器：把学到的词提到候选栏最前面
         CandidateReranker.init(ctx)
+        // 【fainput / ABCD】用户画像：A/B/C 三层的权重与边界。
+        // 必须**在重排器之后**初始化 —— 重排器第一次跑之前画像就得是就绪的，
+        // 否则会拿默认档去打第一屏分（虽然默认档也是对的，但日志会对不上）。
+        UserProfile.init(ctx)
+        // 【fainput / C 层】微 LM 候选打分：**没有模型文件时静默跳过**（正常状态）。
+        // 放最后：它要读几 MB 文件，不该挡住前面几个轻量初始化。
+        LstmScorer.init(ctx)
         // 【fainput / D-2+D-3】个人词库：让引擎真正认识你的词
         PersonalDictionary.init(ctx)
         // 【fainput / L3】报一句 LLM 状态：**后端 + 模型分开说**。

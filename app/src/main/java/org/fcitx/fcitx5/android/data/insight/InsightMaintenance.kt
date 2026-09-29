@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.data.insight.db.DailyStatEntity
 import org.fcitx.fcitx5.android.data.insight.db.InsightDao
 import org.fcitx.fcitx5.android.data.insight.db.InsightDatabase
+import org.fcitx.fcitx5.android.data.llm.LlmModel
+import org.fcitx.fcitx5.android.data.llm.LlmNative
 import org.fcitx.fcitx5.android.utils.appContext
 import timber.log.Timber
 import java.util.Calendar
@@ -116,6 +118,93 @@ object InsightMaintenance {
     /** 热表保留天数 —— UI 用来解释"为什么这里没有更早的数据"。 */
     fun retentionDays(): Int = RETENTION_DAYS
 
+    // ==================== 【ABCD / D 层】叙述 ====================
+
+    private const val KEY_NARRATIVE = "narrative"
+    private const val KEY_NARRATIVE_AT = "narrative_at"
+
+    /** 最近一次算画像时的数据量（给叙述当输入）。 */
+    @Volatile
+    private var lastWords: Int = 0
+
+    @Volatile
+    private var lastPairs: Int = 0
+
+    /** 最近一次叙述（给「输入数据」页显示）。空串 = 还没生成过。 */
+    fun narrative(): String =
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_NARRATIVE, null) ?: ""
+
+    /** 叙述生成时刻（0 = 从未生成）。 */
+    fun narrativeAt(): Long =
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getLong(KEY_NARRATIVE_AT, 0L)
+
+    /**
+     * 【D 层】让大模型把统计结果写成**一句人话**。
+     *
+     * ## 为什么它必须在这里、而不是打字路径
+     *
+     * 0.5B 模型生成 60 个 token 要**几秒**。候选栏要求每键 <50ms。
+     * 差三个数量级 —— 所以它只能在充电/熄屏时跑。
+     *
+     * ## 它是"解说员"，不是"发动机"
+     *
+     * 整理数据的是**确定性算法**（[PersonalDictionary.organize] + 画像），
+     * 模型只负责把已经算好的结果**翻译成人话**。
+     * 换句话说：**模型挂了，功能一点不少，只是少了一句总结。**
+     *
+     * ## 生成完就卸载
+     *
+     * 0.5B 的权重 491MB。这个任务 6 小时才跑一次，
+     * **没必要让它常驻在进程里**。加载几秒是可接受的代价。
+     */
+    private fun narrate(words: Int, pairs: Int) {
+        if (words <= 0 && pairs <= 0) return
+        if (!LlmNative.isAvailable) return
+        val file = LlmModel.current() ?: return
+
+        val t0 = System.currentTimeMillis()
+        val wasLoaded = LlmNative.describe().isNotEmpty()
+        if (!wasLoaded) {
+            val err = LlmNative.loadModel(file.absolutePath)
+            if (err != null) {
+                Timber.w("[insight] 叙述：模型加载失败 %s", err)
+                return
+            }
+        }
+
+        val tier = UserProfile.current.tier.label
+        val prompt = buildString {
+            append("数据：学过 ").append(words).append(" 个词、")
+            append(pairs).append(" 对搭配，当前档位「").append(tier).append("」。")
+            append("用一句话总结这个人的输入习惯。")
+        }
+
+        val out = LlmNative.generateText(
+            LlmNative.chatml(
+                "你是输入法的后台助手。只用一句中文回答，不要解释，不要列举。",
+                prompt
+            ),
+            maxTokens = 64
+        )
+
+        if (!wasLoaded) LlmNative.release()
+
+        if (out.isNullOrBlank()) {
+            Timber.w("[insight] 叙述：生成失败（耗时 %dms）", System.currentTimeMillis() - t0)
+            return
+        }
+
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_NARRATIVE, out.trim().take(120))
+            .putLong(KEY_NARRATIVE_AT, System.currentTimeMillis())
+            .apply()
+
+        Timber.i("[insight] 叙述完成（%dms）：%s", System.currentTimeMillis() - t0, out.trim())
+    }
+
     // ==================== 内部 ====================
 
     private fun shouldRunNow(): Boolean {
@@ -180,6 +269,34 @@ object InsightMaintenance {
             runCatching { PersonalDictionary.organize(d) }
                 .onSuccess { if (it > 0) Timber.i("[insight] L3 整理：新词 %d 条", it) }
                 .onFailure { Timber.w(it, "[insight] L3 整理失败") }
+
+            // 【ABCD / D 层】算**用户画像** —— 四层互联的**唯一写者**。
+            //
+            // 它读的是「现在有多少词 / 多少搭配」，算出的档位决定
+            // A/B/C 三层的权重与边界（见 `UserProfile.derive`）。
+            // 这就是那条反馈环：**数据越长 → 画像越敢动 → 候选栏越像你**。
+            //
+            // 放在最后：前面刚做完归档和整理，此刻的数据是最新的。
+            runCatching {
+                val words = d.wordCount()
+                val pairs = d.bigramCount()
+                lastWords = words
+                lastPairs = pairs
+                UserProfile.publish(UserProfile.derive(words, pairs, System.currentTimeMillis()))
+            }.onFailure { Timber.w(it, "[insight] 画像计算失败") }
+
+            // 【ABCD / D 层】**叙述层**：把统计结果写成一句人话。
+            //
+            // 架构定调（ARCHITECTURE §25.1）：
+            //   整理（从数据里长出东西） = 确定性算法 ✅ 已完成
+            //   叙述（把结果写成一句人话） = **LLM** ← 就是这一步
+            //
+            // 大模型**只在这里**待着：充电/熄屏、分钟级延迟无所谓。
+            // 打字路径上永远不碰它 —— 那是 A/B/C 三层的活。
+            //
+            // 没有模型时静默跳过（这是常态，不是错误）。
+            runCatching { narrate(words = lastWords, pairs = lastPairs) }
+                .onFailure { Timber.w(it, "[insight] 叙述失败") }
 
             appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()

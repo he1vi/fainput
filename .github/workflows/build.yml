@@ -226,6 +226,35 @@ jobs:
 
           echo "✅ 零网络承诺验证通过：产物未声明 INTERNET 权限"
 
+      - name: "★ 构建语言插件（日语 / 韩语 / 泰语 / 越南语 / 粤语 / 繁中 / 僧伽罗 / Rime）"
+        # 【fainput / 多语言】主 APK 只带**中文系 + 英语**：
+        #   inputmethod/ = pinyin · shuangpin · wbx · wbpy · zrm · db
+        # 其它语言在 `plugin/` 下是**独立 APK**，运行时靠 intent 被发现
+        #   （`DataManager.kt` → `pm.queryIntentActivities(PLUGIN_INTENT)`）。
+        #
+        # ⇒ 装哪个插件就多哪种语言，**不装的不占体积**，而且**不用重编主 APK**。
+        #
+        # ⚠️ `continue-on-error`：插件构建失败**不该拖垮主 APK 的交付**。
+        #    失败会在这里标黄，看日志就知道是哪个语言的问题。
+        continue-on-error: true
+        run: |
+          chmod +x gradlew
+          if [ "${{ inputs.build_type }}" = "release" ]; then
+            T=assembleRelease
+          else
+            T=assembleDebug
+          fi
+          echo "──── 构建语言插件（$T）────"
+          ./gradlew \
+            :plugin:hangul:$T \
+            :plugin:thai:$T \
+            :plugin:unikey:$T \
+            :plugin:sayura:$T \
+            :plugin:jyutping:$T \
+            :plugin:chewing:$T \
+            :plugin:anthy:$T \
+            :plugin:rime:$T
+
       - name: List APK
         if: always()
         run: |
@@ -239,3 +268,13 @@ jobs:
           path: app/build/outputs/apk/${{ inputs.build_type == 'release' && 'release' || 'debug' }}/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload 语言插件
+        # 【fainput / 多语言】插件单独一个 artifact（文件名里带语言，一眼能挑）。
+        # `if-no-files-found: ignore` —— 插件没编出来不该让整轮构建红。
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ${{ inputs.build_type == 'release' && 'fainput-langplugins-release' || 'fainput-langplugins-debug' }}
+          path: plugin/*/build/outputs/apk/*/*.apk
+          if-no-files-found: ignore

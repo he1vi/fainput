@@ -8,6 +8,7 @@ package org.fcitx.fcitx5.android.input.candidates.expanded.window
 import android.graphics.drawable.ShapeDrawable
 import android.graphics.drawable.shapes.RectShape
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import androidx.lifecycle.lifecycleScope
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
@@ -15,6 +16,8 @@ import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import org.fcitx.fcitx5.android.core.CapabilityFlag
+import org.fcitx.fcitx5.android.core.CapabilityFlags
 import org.fcitx.fcitx5.android.core.CandidateAction
 import org.fcitx.fcitx5.android.core.FcitxEvent
 import org.fcitx.fcitx5.android.daemon.launchOnReady
@@ -132,6 +135,19 @@ abstract class BaseExpandedCandidateWindow<T : BaseExpandedCandidateWindow<T>> :
 
     private var offsetJob: Job? = null
 
+    /**
+     * 【fainput / 隐私】当前是不是密码框。
+     *
+     * 本窗口是 `InputBroadcastReceiver`，`InputView.startInput()` 会广播到这儿 ——
+     * 和 `InputView` 拿到的是**同一份** capFlags，所以两边的判断永远一致。
+     */
+    private var sensitiveEditor = false
+
+    override fun onStartInput(info: EditorInfo, capFlags: CapabilityFlags) {
+        sensitiveEditor =
+            capFlags.has(CapabilityFlag.Password) || capFlags.has(CapabilityFlag.Sensitive)
+    }
+
     private val candidatesPager by lazy {
         Pager(
             config = PagingConfig(
@@ -142,7 +158,9 @@ abstract class BaseExpandedCandidateWindow<T : BaseExpandedCandidateWindow<T>> :
                 CandidatesPagingSource(
                     fcitx,
                     total = horizontalCandidate.adapter.total,
-                    offset = adapter.offset
+                    offset = adapter.offset,
+                    // 工厂每次刷新都会被调用 ⇒ 这里读到的一定是最新的
+                    mask = sensitiveEditor
                 )
             }
         )

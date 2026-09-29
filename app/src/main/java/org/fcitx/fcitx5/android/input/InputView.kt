@@ -17,8 +17,10 @@ import android.widget.ImageView
 import androidx.annotation.Keep
 import androidx.annotation.RequiresApi
 import androidx.core.view.updateLayoutParams
+import org.fcitx.fcitx5.android.core.CapabilityFlag
 import org.fcitx.fcitx5.android.core.CapabilityFlags
 import org.fcitx.fcitx5.android.core.FcitxEvent
+import org.fcitx.fcitx5.android.core.FormattedText
 import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.daemon.FcitxConnection
 import org.fcitx.fcitx5.android.daemon.launchOnReady
@@ -329,7 +331,41 @@ class InputView(
     /**
      * called when [InputView] is about to show, or restart
      */
+    /** 【fainput / 隐私】当前输入框是不是密码框。由 [startInput] 更新。 */
+    private var sensitiveEditor = false
+
+    /**
+     * 【fainput / 隐私】把一段预编辑遮成**等长**的「·」。
+     *
+     * 为什么必须等长：`FormattedText.cursor` 按 Java String 长度算，
+     * 而且下游（`updatePreeditEmptyState`、光标定位）都依赖 `length`。
+     * 遮成 1 个「·」会把这些全部算错。`·`(U+00B7) 是 1 个 UTF-16 码元，正好 1:1。
+     *
+     * ⚠️ 只遮**我们键盘画的东西**。交给 App 的 composing text 走
+     * `FcitxInputMethodService.updateComposingText()`（另一条路），不受影响 ——
+     * 否则「·」会被真的提交进密码框，输入直接坏掉。
+     */
+    private fun FormattedText.masked(): FormattedText =
+        copy(strings = strings.map { "·".repeat(it.length) }.toTypedArray())
+
+    /**
+     * 【fainput / 隐私】输入面板的**三行**文字一起遮。
+     *
+     * 别只遮 `preedit` —— 拼音输入法里 `auxUp` 往往就是**你正在打的原始拼音串**，
+     * `auxDown` 也可能带候选提示。三个都是明文泄露点。
+     */
+    private fun FcitxEvent.InputPanelEvent.Data.masked(): FcitxEvent.InputPanelEvent.Data =
+        copy(preedit = preedit.masked(), auxUp = auxUp.masked(), auxDown = auxDown.masked())
+
     fun startInput(info: EditorInfo, capFlags: CapabilityFlags, restarting: Boolean = false) {
+        // 【fainput / 隐私】密码框：候选文字一律遮成「·」。
+        //
+        // 为什么在**这里**判：`capFlags` 是系统给的 EditorInfo 推出来的，
+        // 比看输入内容可靠（内容层面有 SensitiveClassifier 兜底，但那是事后）。
+        //
+        // ⚠️ 只在 `CapabilityFlag.Password` / `Sensitive` 上遮 —— **不遮普通输入框**。
+        sensitiveEditor =
+            capFlags.has(CapabilityFlag.Password) || capFlags.has(CapabilityFlag.Sensitive)
         broadcaster.onStartInput(info, capFlags)
         returnKeyDrawable.updateDrawableOnEditorInfo(info)
         if (focusChangeResetKeyboard || !restarting) {
@@ -356,20 +392,45 @@ class InputView(
                 // 【fainput / D-1'】候选栏注入：把我们学过的词提到本页最前面。
                 // 必须在广播之前做 —— 所有候选 UI 都从这里拿数据，改这一处就够了。
                 // （展开窗走 getCandidates() 直连引擎，显示的是引擎原序，不受影响。）
-                broadcaster.onCandidateUpdate(CandidateReranker.reorder(it.data))
+                val reordered = CandidateReranker.reorder(it.data)
+                // 【fainput / 隐私】密码框：候选文字一律遮成「·」。
+                //
+                // 安全性前提（已核实）：选候选走的是**下标**（`select(index)`），
+                // 不是候选文字 ⇒ 遮住显示**不影响上屏**。
+                //
+                // 为什么必须遮：中文输入法在密码框里照样会拼拼音、出候选，
+                // 候选栏/预编辑等于把密码（或它的拼音）明晃晃写在屏幕上。
+                broadcaster.onCandidateUpdate(
+                    if (!sensitiveEditor) reordered else reordered.copy(
+                        candidates = reordered.candidates.map {
+                            it.copy(text = "·", comment = "")
+                        }.toTypedArray()
+                    )
+                )
             }
             is FcitxEvent.ClientPreeditEvent -> {
-                preeditEmptyState.updatePreeditEmptyState(clientPreedit = it.data)
-                broadcaster.onClientPreeditUpdate(it.data)
+                // 【fainput / 隐私】密码框：预编辑也遮成「·」（等长，见 masked()）。
+                val d = if (sensitiveEditor) it.data.masked() else it.data
+                preeditEmptyState.updatePreeditEmptyState(clientPreedit = d)
+                broadcaster.onClientPreeditUpdate(d)
             }
             is FcitxEvent.InputPanelEvent -> {
-                preeditEmptyState.updatePreeditEmptyState(preedit = it.data.preedit)
+                // 【fainput / 隐私】密码框：preedit / auxUp / auxDown 三行全遮。
+                val d = if (sensitiveEditor) it.data.masked() else it.data
+                preeditEmptyState.updatePreeditEmptyState(preedit = d.preedit)
                 // 【fainput / D-1'】只有正在拼一个词的时候才谈得上"候选"，
                 // 空 preedit 时重排毫无意义。见 CandidateReranker.MIN_PREEDIT。
-                CandidateReranker.onPreeditChanged(it.data.preedit.strings.sumOf { s -> s.length })
-                broadcaster.onInputPanelUpdate(it.data)
+                //
+                // ⚠️ 传的是 **`it.data.preedit`（原始）而不是 `d.preedit`（遮罩后）**：
+                //    密码框里遮罩版全是「·」，拿它去查「码→词」表什么也查不到，
+                //    而且 C 层的上下文也会变成一串点。**显示归显示，数据归数据。**
+                CandidateReranker.onPreeditChanged(it.data.preedit)
+                broadcaster.onInputPanelUpdate(d)
             }
             is FcitxEvent.IMChangeEvent -> {
+                // 【ABCD / 边界】把当前引擎告诉学习层 —— 只有拼音系才参与打分，
+                // 其余引擎（五笔 / 日语 / 英语）走引擎原序，一个字都不动。
+                CandidateReranker.setActiveIm(it.data.addon, it.data.uniqueName)
                 broadcaster.onImeUpdate(it.data)
             }
             is FcitxEvent.StatusAreaEvent -> {

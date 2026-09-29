@@ -10,8 +10,21 @@ import org.fcitx.fcitx5.android.core.CandidateWord
 import org.fcitx.fcitx5.android.daemon.FcitxConnection
 import timber.log.Timber
 
-class CandidatesPagingSource(val fcitx: FcitxConnection, val total: Int, val offset: Int) :
-    PagingSource<Int, CandidateWord>() {
+class CandidatesPagingSource(
+    val fcitx: FcitxConnection,
+    val total: Int,
+    val offset: Int,
+    /**
+     * 【fainput / 隐私】密码框：把候选文字遮成「·」。
+     *
+     * 为什么这里要**单独**做一次：本类**绕过了** `InputView` 那个统一收口 ——
+     * 它用 `getCandidates(offset, limit)` 直接从引擎拉全量列表（见 `CandidateReranker` 的注释）。
+     * 所以遮罩必须在数据源头再做一次，否则展开窗会把明文候选全列出来。
+     *
+     * 安全性同 `InputView`：选候选走的是**下标**，遮显示不影响上屏。
+     */
+    val mask: Boolean = false,
+) : PagingSource<Int, CandidateWord>() {
 
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, CandidateWord> {
         // use candidate index for key, null means load from beginning (with offset)
@@ -27,7 +40,12 @@ class CandidatesPagingSource(val fcitx: FcitxConnection, val total: Int, val off
         } else {
             if (candidates.size < pageSize) null else startIndex + pageSize
         }
-        return LoadResult.Page(candidates.toList(), prevKey, nextKey)
+        return LoadResult.Page(
+            if (!mask) candidates.toList()
+            else candidates.map { it.copy(text = "·", comment = "") }.toList(),
+            prevKey,
+            nextKey
+        )
     }
 
     // always reload from beginning

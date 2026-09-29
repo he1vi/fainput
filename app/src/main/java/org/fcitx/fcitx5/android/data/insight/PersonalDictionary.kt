@@ -180,7 +180,14 @@ object PersonalDictionary {
         // **刻意放在下面那两道闸之前** —— 闸管的是"要不要写进引擎词库"，
         // 而这里只是记个映射：后台整理要靠它把一对搭配拼成一个整词的码。
         if (w.length <= MAX_WORD_LEN && c.length <= MAX_CODE_LEN) {
-            prefs?.edit()?.putString(K_CODE + w, c)?.apply()
+            val key = K_CODE + w
+            // ⚠️ 只在**内容真的变了**时失效快照。
+            //    同一个词还是同一个码 ⇒ 重建出来的表一模一样，
+            //    但重建要扫几百条 prefs 键 —— 每键扫一次就是灾难。
+            if (prefs?.getString(key, null) != c) {
+                prefs?.edit()?.putString(key, c)?.apply()
+                invalidateScoring()
+            }
         }
 
         // 【M·L2】整句路径 —— 判据和单词路径**正好相反**：
@@ -225,7 +232,12 @@ object PersonalDictionary {
         val n = (p.getInt(key, 0) + 1).coerceAtMost(9999)
         p.edit().putInt(key, n).apply()
         // 刚刚够到门槛的那一刻才置脏，避免每次提交都写盘
-        if (n == threshold) dirty = true
+        if (n == threshold) {
+            dirty = true
+            // 【B 层】纠错计数刚够门槛 ⇒ 它**现在才**出现在快照里，必须失效。
+            // 别的键（个人词库条目）不进快照，不用管。
+            if (key.startsWith(K_CORR)) invalidateScoring()
+        }
         if (p.all.size > MAX_KEYS) prune()
     }
 
@@ -412,6 +424,93 @@ object PersonalDictionary {
         return out.sortedByDescending { it.count }
     }
 
+    // ==================== 【B 层】给打分器用的内存快照 ====================
+
+    /**
+     * 【B 层 / 个人纠错】两张表的内存形式。
+     *
+     * ## 为什么必须有快照，不能让打分器直接读 prefs
+     *
+     * `CandidateReranker.reorder()` 跑在**主线程**（候选列表事件里）。
+     * 而 `prefs.all` 是**全量读 + 逐条拆字符串** —— 每按一个键做一次，
+     * 键盘直接就卡了。
+     *
+     * ⇒ **写的时候失效，读的时候重建一次，打字路径只查内存表。**
+     *
+     * ## 两张表分别是什么
+     *
+     * | 表 | 来源 | 含义 |
+     * |---|---|---|
+     * | [codeWords] | `k|<词>` = 码 | **你用这个码打过这个词** |
+     * | [corrections] | `x|<码>|<错>|<对>` = 次数 | **你在这个码下把「错」改成了「对」** |
+     *
+     * 后者是**最强信号** —— 那不是"猜的"，是你亲口纠正过的。
+     */
+    data class ScoringSnapshot(
+        /** 码 → 该码下你历史上选过的词 */
+        val codeWords: Map<String, Set<String>>,
+        /** 码 → (被纠正的错词 → 你改成的对词) */
+        val corrections: Map<String, Map<String, String>>,
+    ) {
+        val isEmpty: Boolean get() = codeWords.isEmpty() && corrections.isEmpty()
+
+        companion object {
+            val Empty = ScoringSnapshot(emptyMap(), emptyMap())
+        }
+    }
+
+    @Volatile
+    private var scoringSnap: ScoringSnapshot? = null
+
+    /**
+     * 取快照。**第一次访问时构建**（可能扫几百条 prefs 键），之后直接返回。
+     *
+     * 任何写入路径都必须调 [invalidateScoring] —— 否则学了新词却用不上。
+     */
+    fun scoringSnapshot(): ScoringSnapshot {
+        scoringSnap?.let { return it }
+        synchronized(this) {
+            scoringSnap?.let { return it }
+            val s = buildScoringSnapshot()
+            scoringSnap = s
+            return s
+        }
+    }
+
+    /** 让快照失效，下次读取时重建。**任何写 prefs 的地方都要叫它。** */
+    private fun invalidateScoring() {
+        scoringSnap = null
+    }
+
+    private fun buildScoringSnapshot(): ScoringSnapshot {
+        val p = prefs ?: return ScoringSnapshot.Empty
+        val codeWords = HashMap<String, MutableSet<String>>()
+        val corr = HashMap<String, MutableMap<String, String>>()
+        p.all.forEach { (k, v) ->
+            when {
+                k.startsWith(K_CODE) -> {
+                    val word = k.removePrefix(K_CODE)
+                    val code = v as? String ?: return@forEach
+                    if (word.isNotEmpty() && code.isNotEmpty()) {
+                        codeWords.getOrPut(code) { HashSet(4) } += word
+                    }
+                }
+                k.startsWith(K_CORR) -> {
+                    val count = v as? Int ?: return@forEach
+                    if (count < MIN_CORRECTION) return@forEach
+                    val parts = k.removePrefix(K_CORR).split('|')
+                    if (parts.size != 3) return@forEach
+                    corr.getOrPut(parts[0]) { HashMap(4) }[parts[1]] = parts[2]
+                }
+            }
+        }
+        Timber.i(
+            "[pdict] B 层快照：%d 个码 / %d 组纠错",
+            codeWords.size, corr.values.sumOf { it.size }
+        )
+        return ScoringSnapshot(codeWords, corr)
+    }
+
     // ==================== 改（给设置页用） ====================
 
     /** 采纳一条纠错：把「码 → 对词」按置顶写入。 */
@@ -421,6 +520,7 @@ object PersonalDictionary {
             .putInt(K_WORD + c.code + "|" + c.right, MIN_CONFIRM)
             .remove(K_CORR + c.code + "|" + c.wrong + "|" + c.right)
             .apply()
+        invalidateScoring()
         dirty = true
         publishIfNeeded(api, force = true)
     }
@@ -428,6 +528,7 @@ object PersonalDictionary {
     /** 忽略一条纠错：只删提示，不动词库。 */
     fun dismissCorrection(c: Correction) {
         prefs?.edit()?.remove(K_CORR + c.code + "|" + c.wrong + "|" + c.right)?.apply()
+        invalidateScoring()
     }
 
     /** 删除一条词库条目（直接改文件）。 */

@@ -24,7 +24,6 @@ import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.insight.CorrectionScorer
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
-import org.fcitx.fcitx5.android.data.insight.LstmScorer
 import org.fcitx.fcitx5.android.data.insight.PersonalDictionary
 import org.fcitx.fcitx5.android.data.insight.UserProfile
 import org.fcitx.fcitx5.android.data.insight.db.LevelCount
@@ -220,18 +219,12 @@ class InsightFragment : PaddingPreferenceFragment() {
                 }
                 addPreference(pRerank)
 
-                // 【ABCD】把四层的状态各露一行 —— 让"整体在动"这件事看得见。
+                // 【ABCD】把**数据层**的状态露出来 —— 让"整体在动"这件事看得见。
                 // 标题 ≤4 字、摘要只放值（§零.1）。
-                addPreference(Preference(context).apply {
-                    setup("微 LM", LstmScorer.stats())
-                    // 【内置模型】模型随 APK 一起装（`assets/lstm/model.fnlstm`），
-                    // 不需要导入。这一行能点开是为了**看状态 + 诊断**
-                    // （载入 / 试算 / 释放），不是导入入口。
-                    setOnPreferenceClickListener {
-                        navigateWithAnim(SettingsRoute.LstmModel)
-                        true
-                    }
-                })
+                //
+                // 注意：这里只放「学到了什么」。
+                // **模型**（大模型 + 微 LM）的入口在「设置 → 模型」那一页 ——
+                // 微 LM 原来错放在这里，已移走。
                 addPreference(Preference(context).apply {
                     setup("个人纠错", CorrectionScorer.stats())
                 })

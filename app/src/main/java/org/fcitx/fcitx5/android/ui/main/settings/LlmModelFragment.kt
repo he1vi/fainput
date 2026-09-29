@@ -14,9 +14,12 @@ import androidx.preference.PreferenceCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.fcitx.fcitx5.android.data.insight.LstmScorer
 import org.fcitx.fcitx5.android.data.llm.LlmModel
 import org.fcitx.fcitx5.android.data.llm.LlmNative
 import org.fcitx.fcitx5.android.ui.common.PaddingPreferenceFragment
+import org.fcitx.fcitx5.android.utils.navigateWithAnim
+import org.fcitx.fcitx5.android.utils.setup
 
 /**
  * 【fainput / L3】模型页 —— 让"模型到底在不在、能不能用"变成**看得见**的。
@@ -78,6 +81,23 @@ class LlmModelFragment : PaddingPreferenceFragment() {
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         preferenceScreen = preferenceManager.createPreferenceScreen(requireContext()).apply {
+            // 【fainput / C 层】微 LM 的入口放**这一页**（「模型」），不放「输入数据」。
+            //
+            // 两页的分工，一句话：
+            //   「模型」   = **装了什么、能不能用**（大模型 + 微 LM 都在这）
+            //   「输入数据」= **学到了什么**（词频 / 纠错 / 档位）
+            //
+            // 微 LM 是**模型**，所以它的入口归这里。
+            val catLstm = PreferenceCategory(context).apply { title = "微 LM" }
+            addPreference(catLstm)
+            catLstm.addPreference(Preference(context).apply {
+                setup("候选打分", LstmScorer.stats())
+                setOnPreferenceClickListener {
+                    navigateWithAnim(SettingsRoute.LstmModel)
+                    true
+                }
+            })
+
             catState = PreferenceCategory(context).apply { title = "状态" }
             addPreference(catState)
 

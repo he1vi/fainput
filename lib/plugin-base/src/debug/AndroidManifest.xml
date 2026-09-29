@@ -24,11 +24,15 @@
             android:exported="true"
             android:theme="@style/DeviceSettingsTheme"
             tools:targetApi="24">
+            <!--
+                【fainput】这里只**移除**非 debug 那个 filter，不再重复声明 `.debug` 的。
+
+                原因：`.debug` 的那个已经改由 `src/main` 声明了
+                （因为 release 变体也需要它 —— 主程序 release 构建也带 `.debug` 后缀）。
+                如果这里再声明一次，debug 变体就会有两份一模一样的 intent-filter。
+            -->
             <intent-filter tools:node="remove">
                 <action android:name="org.fcitx.fcitx5.android.plugin.MANIFEST" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="org.fcitx.fcitx5.android.debug.plugin.MANIFEST" />
             </intent-filter>
         </activity>
     </application>

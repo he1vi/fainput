@@ -19,8 +19,28 @@ class AndroidPluginAppConventionPlugin : Plugin<Project> {
             buildFeatures {
                 buildConfig = true
             }
+            /*
+             * 【fainput】插件**必须签名** —— 否则 AGP 产出 `-release-unsigned.apk`，
+             * 而 Android 拒绝安装未签名的 APK（连 debug 都自动签，release 不会）。
+             *
+             * 上游只在 `app` 模块配了 signingConfig，`plugin/*` 一个都没有 ——
+             * 所以上游的 release 插件历来都是 unsigned 的（他们大概只用 debug 插件）。
+             *
+             * 用仓库里那份固定 keystore（和主 APK 同一份）：
+             * 密码就是公开的 "android"，因为它本来就是 debug key（见 PROJECT.md §十一）。
+             */
+            signingConfigs {
+                create("fainput") {
+                    storeFile = target.rootProject.file("signing/debug.keystore")
+                    storePassword = "android"
+                    keyAlias = "androiddebugkey"
+                    keyPassword = "android"
+                }
+            }
             buildTypes {
                 release {
+                    // 不配这一行 ⇒ 产物叫 `-release-unsigned.apk` ⇒ 装不上。
+                    signingConfig = signingConfigs.getByName("fainput")
                     buildConfigField("String", "MAIN_APPLICATION_ID", "\"org.fcitx.fcitx5.android\"")
                     addManifestPlaceholders(
                         mapOf(

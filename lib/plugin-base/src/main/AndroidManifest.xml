@@ -28,6 +28,22 @@
             <intent-filter>
                 <action android:name="org.fcitx.fcitx5.android.plugin.MANIFEST" />
             </intent-filter>
+            <!--
+                【fainput】非 debug 名字之外，**额外**声明 debug 名字。
+
+                为什么：主程序是 fainput 的 fork，**release 构建也带 `.debug` 后缀**
+                （`applicationIdSuffix = ".debug"` —— 数据是按包名存的，换包名 = 数据全没）。
+                于是主程序查的是 `org.fcitx.fcitx5.android.debug.plugin.MANIFEST`，
+                而上游只在 **debug 变体**里声明这个名字。
+
+                ⇒ 「release 插件 + 带 .debug 后缀的主程序」两边对不上，插件装了也不生效。
+
+                上游的 `src/debug/AndroidManifest.xml` 会把下面这条**移除**，
+                所以 debug 变体仍然只声明 `.debug` 那一个名字，行为不变。
+            -->
+            <intent-filter>
+                <action android:name="org.fcitx.fcitx5.android.debug.plugin.MANIFEST" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

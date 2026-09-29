@@ -16,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.R
+import androidx.preference.PreferenceScreen
 import org.fcitx.fcitx5.android.core.FcitxAPI
 import org.fcitx.fcitx5.android.core.RawConfig
 import org.fcitx.fcitx5.android.daemon.FcitxConnection
@@ -28,6 +29,20 @@ abstract class FcitxPreferenceFragment : PaddingPreferenceFragment() {
     abstract fun getPageTitle(): String
     abstract suspend fun obtainConfig(fcitx: FcitxAPI): RawConfig
     abstract suspend fun saveConfig(fcitx: FcitxAPI, newConfig: RawConfig)
+
+    /**
+     * 子类可以往**自动生成的**配置屏幕上加点东西。默认什么都不做。
+     *
+     * ## 为什么需要这个钩子
+     *
+     * 这一页是 `PreferenceScreenFactory` 按 `RawConfig` **全自动渲染**的 ——
+     * 上游没留任何插口（`onCreatePreferences` 是 `final`）。
+     *
+     * 但有些内容**不是「配置项」而是「说明」**：比如"笔画反查要打 hspnz"。
+     * 这种东西必须和配置放在**同一页**才找得到 —— 否则功能明明开着，
+     * 用户却永远不知道它存在。
+     */
+    protected open fun decorateScreen(screen: PreferenceScreen) {}
 
     private lateinit var raw: RawConfig
     private var configLoaded = false
@@ -99,6 +114,9 @@ abstract class FcitxPreferenceFragment : PaddingPreferenceFragment() {
                 PreferenceScreenFactory.create(
                     preferenceManager, parentFragmentManager, raw, ::save
                 ).apply {
+                    // 【fainput】给子类一个**往自动生成的屏幕上加东西**的机会。
+                    // 见 [decorateScreen] 的注释。
+                    decorateScreen(this)
                     if (isEmpty()) {
                         addPreference(R.string.no_config_options)
                     }

@@ -389,24 +389,19 @@ class InputView(
     override fun handleFcitxEvent(it: FcitxEvent<*>) {
         when (it) {
             is FcitxEvent.CandidateListEvent -> {
-                // 【fainput / D-1'】候选栏注入：把我们学过的词提到本页最前面。
-                // 必须在广播之前做 —— 所有候选 UI 都从这里拿数据，改这一处就够了。
-                // （展开窗走 getCandidates() 直连引擎，显示的是引擎原序，不受影响。）
-                val reordered = CandidateReranker.reorder(it.data)
-                // 【fainput / 隐私】密码框：候选文字一律遮成「·」。
+                // 【fainput / D-1' + 隐私】候选栏注入 + 后处理。
+                //
+                // 现在是**两段**（见 `CandidateReranker.reorder`）：
+                //   ① 排序  —— ABCD 学习层，只动顺序
+                //   ② 加工  —— `CandidateFilters`（Rime 的 filters），可删项/改内容
+                //
+                // 密码遮罩就是 ② 里的一个过滤器（`sensitive-mask`），
+                // 不再是内联在这里的一段 —— 所以这里只需要把 `sensitiveEditor` 传下去。
                 //
                 // 安全性前提（已核实）：选候选走的是**下标**（`select(index)`），
                 // 不是候选文字 ⇒ 遮住显示**不影响上屏**。
-                //
-                // 为什么必须遮：中文输入法在密码框里照样会拼拼音、出候选，
-                // 候选栏/预编辑等于把密码（或它的拼音）明晃晃写在屏幕上。
-                broadcaster.onCandidateUpdate(
-                    if (!sensitiveEditor) reordered else reordered.copy(
-                        candidates = reordered.candidates.map {
-                            it.copy(text = "·", comment = "")
-                        }.toTypedArray()
-                    )
-                )
+                val reordered = CandidateReranker.reorder(it.data, sensitiveEditor)
+                broadcaster.onCandidateUpdate(reordered)
             }
             is FcitxEvent.ClientPreeditEvent -> {
                 // 【fainput / 隐私】密码框：预编辑也遮成「·」（等长，见 masked()）。

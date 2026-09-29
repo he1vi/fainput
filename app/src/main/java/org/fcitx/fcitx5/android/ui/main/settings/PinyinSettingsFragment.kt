@@ -4,6 +4,8 @@
  */
 package org.fcitx.fcitx5.android.ui.main.settings
 
+import androidx.preference.Preference
+import androidx.preference.PreferenceScreen
 import org.fcitx.fcitx5.android.core.FcitxAPI
 import org.fcitx.fcitx5.android.core.RawConfig
 
@@ -44,6 +46,51 @@ class PinyinSettingsFragment : FcitxPreferenceFragment() {
 
     override suspend fun saveConfig(fcitx: FcitxAPI, newConfig: RawConfig) {
         fcitx.setAddonConfig("pinyin", newConfig)
+    }
+
+    /**
+     * 【从 Rime 借鉴 / 笔画反查】—— **只加说明，一个字节的引擎行为都不改**。
+     *
+     * ## 这个功能其实早就有了
+     *
+     * 引擎里（`im/pinyin/pinyin.cpp`）有一整套笔画 / 拆字反查，而且**数据都在包里**：
+     *
+     * | 文件 | 大小 | 作用 |
+     * |---|---|---|
+     * | `lib/arm64-v8a/libpinyinhelper.so` | 159 KB | 消费者 |
+     * | `usr/share/fcitx5/pinyinhelper/py_stroke.mb` | **1.38 MB** | 笔画数据 |
+     * | `usr/share/fcitx5/pinyinhelper/py_table.mb` | 367 KB | 反查表 |
+     * | `usr/share/fcitx5/pinyin/chaizi.dict` | 152 KB | 拆字词典 |
+     *
+     * 两个开关（`StrokeCandidateEnabled` / `ChaiziEnabled`）**默认就是开的**，
+     * 而且会被这一页**自动渲染出来**（它们是 `PinyinEngineConfig` 的 Option）。
+     *
+     * ## 唯一缺的东西：**用户不可能猜到要打 hspnz**
+     *
+     * `pinyin.cpp` 里的判定就一句话：
+     *
+     * ```cpp
+     * bool isStroke(const std::string &input) {
+     *     static const std::unordered_set<char> py{'h', 'p', 's', 'z', 'n'};
+     *     return std::all_of(input.begin(), input.end(),
+     *                        [](char c) { return py.count(c); });
+     * }
+     * ```
+     *
+     * 这五个字母对应五种笔画，但这一点**在 UI 上完全不可见** ——
+     * 功能明明开着，用户却永远发现不了。这就是"可发现性"缺口。
+     *
+     * 所以这里加一行**说明**（不是开关 —— 开关已经有了，别重复）。
+     */
+    override fun decorateScreen(screen: PreferenceScreen) {
+        screen.addPreference(
+            0,
+            Preference(requireContext()).apply {
+                title = "笔画找字"
+                summary = "h横 s竖 p撇 n捺 z折 · 例 hhh = 三横"
+                isSelectable = false
+            }
+        )
     }
 
     private fun stripCloudOptions(node: RawConfig?) {

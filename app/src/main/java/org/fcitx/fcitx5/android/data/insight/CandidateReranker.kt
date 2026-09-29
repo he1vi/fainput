@@ -7,6 +7,7 @@ package org.fcitx.fcitx5.android.data.insight
 import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.launch
+import org.fcitx.fcitx5.android.core.CandidateWord
 import org.fcitx.fcitx5.android.core.FcitxEvent
 import org.fcitx.fcitx5.android.core.FormattedText
 import timber.log.Timber
@@ -334,24 +335,68 @@ object CandidateReranker {
     // ==================== 核心：重排 ====================
 
     /**
-     * 把 [data] 里的候选词重排。**只提升，不增删** ——
-     * 候选总数、每个词的内容都不变，只有顺序变。
+     * 把 [data] 里的候选词**重排 + 加工**。
+     *
+     * ## 两段，互相独立
+     *
+     * | 段 | 谁 | 干什么 | 能改数量吗 |
+     * |---|---|---|---|
+     * | **① 排序** | [sortPhase]（ABCD 学习层） | 决定**顺序** | ❌ 只重排 |
+     * | **② 加工** | [CandidateFilters]（= Rime 的 `filters`） | 遮罩 / 去重… | ✅ **可以删项** |
+     *
+     * 拆成两段的原因见 [CandidateFilters] 的类注释 —— 一句话：
+     * **排序是学习层的事，加工不是**。混在一起会污染打分，而且不可组合。
+     *
+     * @param sensitive 当前输入框是不是密码框（交给 filters 决定要不要遮罩）
      */
-    fun reorder(data: FcitxEvent.CandidateListEvent.Data): FcitxEvent.CandidateListEvent.Data {
+    fun reorder(
+        data: FcitxEvent.CandidateListEvent.Data,
+        sensitive: Boolean = false,
+    ): FcitxEvent.CandidateListEvent.Data {
         ensureSuppressedLoaded()
         perm = null
         val list = data.candidates
-        if (!enabled || list.size < 3) return data
-        if (lastPreeditLength < MIN_PREEDIT) return data
+
+        // ── 第 ① 段：排序 ──
+        // 条件不满足时 `ordered` 就是引擎原序（0,1,2,…），**一个都不动**。
+        val ordered = sortPhase(list)
+
+        // ── 第 ② 段：加工 ──
+        // 【从 Rime 借鉴】这一段**和排序无关** —— 排序不参与时它照样跑。
+        // （遮罩必须在密码框里生效，和"要不要重排"毫无关系。）
+        val items = ordered.map { CandidateFilters.Item(it, list[it]) }
+        val filtered = CandidateFilters.run(items, CandidateFilters.Ctx(sensitive))
+
+        // 顺序和内容都没变 ⇒ 不设 perm。
+        // `displayToEngine` 会退化成恒等映射，这是最省事也最安全的路径。
+        val changed = filtered.size != list.size ||
+            filtered.withIndex().any { (i, it) -> it.engineIndex != i || it.word != list[i] }
+        if (!changed) return data
+
+        perm = IntArray(filtered.size) { filtered[it].engineIndex }
+        return data.copy(candidates = Array(filtered.size) { filtered[it].word })
+    }
+
+    /**
+     * **第 ① 段：排序** —— ABCD 学习层的全部逻辑都在这里。
+     *
+     * 返回「**显示顺序 → 引擎下标**」的序列。
+     * 任何一条前置条件不满足都返回**引擎原序**（`list.indices`）——
+     * 这是刻意的：**宁可不插手，不可乱插手**。
+     */
+    private fun sortPhase(list: Array<CandidateWord>): List<Int> {
+        val identity = list.indices.toList()
+        if (!enabled || list.size < 3) return identity
+        if (lastPreeditLength < MIN_PREEDIT) return identity
         // 【ABCD / 边界】学习层**只在拼音系引擎上参与**。
         // 其它引擎（五笔 / 日语 / 英语）直接放行 —— 引擎原序，一个字都不动。
-        if (!pinyinLike) return data
+        if (!pinyinLike) return identity
 
         maybeRefresh()
         val scores = promote
         // 【M·L1】词搭配：`上一个上屏的词` 后面常跟哪些词。
         val pairs = bigram
-        if (scores.isEmpty() && pairs.isEmpty()) return data
+        if (scores.isEmpty() && pairs.isEmpty()) return identity
 
         // 【ABCD】画像：A/B/C 三层的权重与边界都从这一份来（无锁读）。
         val profile = UserProfile.current
@@ -384,7 +429,7 @@ object CandidateReranker {
             if (s.isZero) return@forEachIndexed
             rows += i to s
         }
-        if (rows.isEmpty()) return data
+        if (rows.isEmpty()) return identity
 
         // 【C 层 / 公平性】预算用尽 ⇒ 把 `lm` 的贡献**整体扣掉**。
         // 扣法就是 `fused - lm * wLm` —— `fused` 本来就是各项的加权和，
@@ -403,18 +448,16 @@ object CandidateReranker {
         val front = scored.take(profile.maxPromote).map { it.first }
 
         // 已经都在最前面 → 不用动
-        if (front.withIndex().all { (i, engineIdx) -> i == engineIdx }) return data
+        if (front.withIndex().all { (i, engineIdx) -> i == engineIdx }) return identity
 
         val order = ArrayList<Int>(list.size)
         order += front
         list.indices.forEach { if (it !in front) order += it }
-        val p = IntArray(order.size) { order[it] }
-        perm = p
         Timber.i(
             "[rerank] promoted %d of %d candidates (front=%s)",
             front.size, list.size, front.toString()
         )
-        return data.copy(candidates = Array(list.size) { list[p[it]] })
+        return order
     }
 
     /**

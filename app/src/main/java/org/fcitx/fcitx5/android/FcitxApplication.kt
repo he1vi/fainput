@@ -21,6 +21,7 @@ import kotlinx.coroutines.plus
 import org.fcitx.fcitx5.android.core.data.DataManager
 import org.fcitx.fcitx5.android.daemon.FcitxDaemon
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
+import org.fcitx.fcitx5.android.data.insight.CandidateFilters
 import org.fcitx.fcitx5.android.data.insight.CandidateReranker
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
@@ -162,6 +163,9 @@ class FcitxApplication : Application() {
         InsightRecorder.init(ctx)
         // 【fainput / D-1'】候选重排器：把学到的词提到候选栏最前面
         CandidateReranker.init(ctx)
+        // 【从 Rime 借鉴】候选后处理管道（filters）—— 和排序分开的"加工"层。
+        // 必须在重排器之后：`reorder()` 的第 ② 段要用它。
+        CandidateFilters.init(ctx)
         // 【fainput / ABCD】用户画像：A/B/C 三层的权重与边界。
         // 必须**在重排器之后**初始化 —— 重排器第一次跑之前画像就得是就绪的，
         // 否则会拿默认档去打第一屏分（虽然默认档也是对的，但日志会对不上）。

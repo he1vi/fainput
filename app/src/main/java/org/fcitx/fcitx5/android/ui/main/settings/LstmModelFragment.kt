@@ -61,11 +61,6 @@ class LstmModelFragment : PaddingPreferenceFragment() {
 
     private var loading: Boolean = false
 
-    /** `.fnlstm` 没有注册 mime，只能放宽到所有文件。 */
-    private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) importModel(uri)
-    }
-
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         preferenceScreen = preferenceManager.createPreferenceScreen(requireContext()).apply {
             val catState = PreferenceCategory(context).apply { title = "状态" }
@@ -81,13 +76,9 @@ class LstmModelFragment : PaddingPreferenceFragment() {
 
             val catActions = PreferenceCategory(context).apply { title = "操作" }
             addPreference(catActions)
-            catActions.addPreference(Preference(context).apply {
-                title = "导入模型"
-                setOnPreferenceClickListener {
-                    picker.launch(arrayOf("*/*"))
-                    true
-                }
-            })
+            // 【fainput / C 层】模型是**内置**在 APK 里的（`assets/lstm/model.fnlstm`），
+            // 由 `DataManager` 同步到数据目录 —— **没有「导入」这条路**。
+            // 这里只留诊断：载入 / 试算 / 释放。
             catActions.addPreference(Preference(context).apply {
                 title = "载入模型"
                 setOnPreferenceClickListener {
@@ -107,16 +98,6 @@ class LstmModelFragment : PaddingPreferenceFragment() {
                 setOnPreferenceClickListener {
                     LstmScorer.release()
                     render()
-                    true
-                }
-            })
-            catActions.addPreference(Preference(context).apply {
-                title = "删除模型"
-                setOnPreferenceClickListener {
-                    val n = LstmScorer.removeModels(requireContext())
-                    lastResult = ""
-                    render()
-                    toast(if (n > 0) "已删除 $n 个" else "没有文件")
                     true
                 }
             })
@@ -204,30 +185,6 @@ class LstmModelFragment : PaddingPreferenceFragment() {
             render()
         }
     }
-
-    private fun importModel(uri: Uri) {
-        val name = queryName(uri)
-        // 同上：协程里别碰 requireContext()
-        val appCtx = requireContext().applicationContext
-        lifecycleScope.launch {
-            toast("正在导入…")
-            LstmScorer.importModel(appCtx, uri, name).onSuccess { file ->
-                lastResult = ""
-                render()
-                toast("已导入：${file.name}（${file.length() / 1024 / 1024} MB）")
-                loadModel(manual = false)
-            }.onFailure {
-                toast("导入失败：${it.message}")
-            }
-        }
-    }
-
-    /** 从 Uri 取显示名 —— 用来给模型文件起名。 */
-    private fun queryName(uri: Uri): String? = runCatching {
-        requireContext().contentResolver
-            .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-    }.getOrNull()
 
     private fun toast(msg: String) {
         android.widget.Toast.makeText(requireContext(), msg, android.widget.Toast.LENGTH_SHORT).show()

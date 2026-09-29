@@ -227,6 +227,18 @@ object PersonalDictionary {
         bump(K_CORR + c + "|" + w1 + "|" + w2, MIN_CORRECTION)
     }
 
+    /**
+     * 每提交这么多次才检查一次"记录是不是太多了"。
+     *
+     * ⚠️ 为什么必须节流：`SharedPreferences.getAll()` 会**复制整个表**
+     * （几千键时约 1ms），而 [bump] 在**每次选词**时都会跑（主线程）。
+     * 剪枝是 housekeeping，晚几百次做完全无所谓。
+     */
+    private const val KEY_CHECK_EVERY = 128
+
+    /** 距上次检查过了多少次提交。**只是启发式计数器，不必精确。** */
+    private var bumpTick = 0
+
     private fun bump(key: String, threshold: Int) {
         val p = prefs ?: return
         val n = (p.getInt(key, 0) + 1).coerceAtMost(9999)
@@ -238,7 +250,12 @@ object PersonalDictionary {
             // 别的键（个人词库条目）不进快照，不用管。
             if (key.startsWith(K_CORR)) invalidateScoring()
         }
-        if (p.all.size > MAX_KEYS) prune()
+        // 记录太多就剪一次枝 —— **每 KEY_CHECK_EVERY 次提交才查一次**，
+        // 因为查一次要把整个 prefs 表拷一份（见 KEY_CHECK_EVERY 的注释）。
+        if (++bumpTick >= KEY_CHECK_EVERY) {
+            bumpTick = 0
+            if (p.all.size > MAX_KEYS) prune()
+        }
     }
 
     /** 记录太多就丢掉只出现过 1 次的（那些本来也没资格进词库）。 */

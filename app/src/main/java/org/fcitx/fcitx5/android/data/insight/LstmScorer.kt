@@ -5,9 +5,7 @@
 package org.fcitx.fcitx5.android.data.insight
 
 import android.content.Context
-import android.net.Uri
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import org.fcitx.fcitx5.android.core.data.DataManager
 import timber.log.Timber
 import java.io.File
 
@@ -54,9 +52,27 @@ import java.io.File
  */
 object LstmScorer {
 
-    /** 模型放这儿（用户导入 / 训练脚本产出）。 */
+    /**
+     * 【内置模型】放在 `app/src/main/assets/lstm/model.fnlstm`。
+     *
+     * ## 为什么不需要"导入"、也不需要解压代码
+     *
+     * `DataDescriptorTask`（build-logic）会**扫整个 assets 目录**、
+     * 给每个文件算 SHA256 写进 `descriptor.json`；运行时 `DataManager.sync()`
+     * 按这张表把文件同步到 **`数据目录/<相对路径>`**。
+     *
+     * ⇒ `assets/lstm/model.fnlstm` 会变成 `数据目录/lstm/model.fnlstm` ——
+     *   **一个真实文件路径，C++ 直接 `fopen`**。
+     *
+     * ## 所以 [dir] 必须指向 `DataManager.dataDir` 而不是 `filesDir`
+     *
+     * 两者是不同的目录。写到 `filesDir` 里的话，**内置模型永远找不到**。
+     */
     private const val DIR = "lstm"
     private const val EXT = ".fnlstm"
+
+    /** 内置模型的文件名（assets 里那个）。 */
+    private const val BUILTIN_NAME = "model.fnlstm"
 
     /**
      * **一次重排的总预算**（毫秒）。
@@ -67,6 +83,9 @@ object LstmScorer {
      * **宁可少提升，不可卡键盘。**
      */
     private const val BUDGET_MS = 10.0
+
+    /** [BUDGET_MS] 的纳秒表示 —— 免得每次打分都做一遍浮点乘法。 */
+    private val BUDGET_NS = (BUDGET_MS * 1_000_000).toLong()
 
     /**
      * C 方案把分数从「log 概率」换成了「原始 logit」，两者差一个 logsumexp。
@@ -100,8 +119,19 @@ object LstmScorer {
     @Volatile
     private var usedNs = 0L
 
+    /**
+     * **本轮**预算是否已用尽。由 [beginBatch] 每轮重置。
+     *
+     * 为什么必须区分"本轮"和"历史"：`ScoringPipeline` 对**每个候选**各调一次
+     * [score]，预算用尽后后面的候选拿到 `lm = 0` ⇒ **同一次重排里一半候选
+     * 带神经加成、一半不带**。重排器靠这个标志把 C 层贡献**整体撤掉**。
+     */
     @Volatile
-    private var budgetWarned = false
+    private var exhausted = false
+
+    /** 「预算用尽」这条日志打过没 —— 只打一次，避免刷屏。 */
+    @Volatile
+    private var warned = false
 
     /** 上次加载失败的模型名（避免重复刷日志）。 */
     @Volatile
@@ -112,48 +142,41 @@ object LstmScorer {
 
     // ==================== 模型文件 ====================
 
-    /** 模型目录 —— 应用私有。**非 root 写不进去**，只能靠 [importModel]。 */
-    fun dir(ctx: Context): File = File(ctx.filesDir, DIR).apply { mkdirs() }
-
-    /** 磁盘上的模型：多个时取**最大的那个**（和 LLM 那边同一个策略：大的通常更好）。 */
-    fun currentModel(ctx: Context): File? = dir(ctx).listFiles()
-        ?.filter { it.isFile && it.name.endsWith(EXT, ignoreCase = true) }
-        ?.maxByOrNull { it.length() }
+    /**
+     * 模型目录。
+     *
+     * ⚠️ **必须是 `DataManager.dataDir`，不是 `filesDir`** ——
+     * assets 同步的目标就是这里，写错地方内置模型就永远找不到。
+     */
+    fun dir(ctx: Context): File = File(DataManager.dataDir, DIR).apply { mkdirs() }
 
     /**
-     * 从系统文件选择器导入一个 `.fnlstm`。
+     * 当前要用的模型。
      *
-     * **这个入口是必须的，不是锦上添花。** 模型要放在 `filesDir/lstm/`，
-     * 那是应用私有目录 —— 非 root 设备上 `cp` 不进去、`adb push` 也不认，
-     * 没有它模型在真机上永远装不上，"装载模型"这件事根本无从谈起。
+     * **内置优先**（`assets/lstm/model.fnlstm` → 同步过来的那个），
+     * 找不到才退回"目录里最大的 `.fnlstm`"（给将来放多个模型留的路）。
      */
-    suspend fun importModel(ctx: Context, uri: Uri, displayName: String?): Result<File> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val raw = displayName?.takeIf { it.isNotBlank() } ?: "model$EXT"
-                val name = (if (raw.endsWith(EXT, ignoreCase = true)) raw else raw + EXT)
-                    .replace('/', '_')
-                    .replace('\\', '_')
-                val target = File(dir(ctx), name)
-                val tmp = File(dir(ctx), "$name.part")
-                ctx.contentResolver.openInputStream(uri)?.use { input ->
-                    tmp.outputStream().use { output -> input.copyTo(output, 1 shl 16) }
-                } ?: error("打不开这个文件")
-                if (target.exists()) target.delete()
-                tmp.renameTo(target)
-                invalidate()          // 换模型了 —— 让下次 init 重新加载
-                Timber.i("[lstm] 模型已导入：%s（%d 字节）", name, target.length())
-                target
-            }
-        }
-
-    /** 删掉所有模型（含写了一半的 .part）。返回删掉几个。 */
-    fun removeModels(ctx: Context): Int {
-        invalidate()
-        var n = 0
-        dir(ctx).listFiles()?.forEach { if (it.isFile && it.delete()) n++ }
-        return n
+    fun currentModel(ctx: Context): File? {
+        val d = dir(ctx)
+        File(d, BUILTIN_NAME).takeIf { it.isFile && it.length() > 0 }?.let { return it }
+        return d.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(EXT, ignoreCase = true) }
+            ?.maxByOrNull { it.length() }
     }
+
+    // ==================== 为什么没有「导入模型」====================
+    //
+    // 【已删除】`importModel()` / `removeModels()`。
+    //
+    // 模型现在是**内置**的：`app/src/main/assets/lstm/model.fnlstm` 由
+    // `DataDescriptorTask` 记进 `descriptor.json`，运行时 `DataManager.sync()`
+    // 同步到 `数据目录/lstm/model.fnlstm` —— 一个真实路径，C++ 直接 `fopen`。
+    //
+    // 所以既不需要导入 UI，也不需要"从 assets 解压出来"的代码（同步已经把
+    // 文件落到磁盘了）。少两条路径 ⇒ 少两类 bug。
+    //
+    // 将来要换模型：**换掉 assets 里那个文件重新构建**。
+    // （真要支持"用户自己换"，再把导入加回来 —— 但那是另一个决定。）
 
     // ==================== 生命周期 ====================
 
@@ -212,10 +235,21 @@ object LstmScorer {
         if (c != context) context = c
     }
 
-    /** 每次重排开始时调 —— **重置预算**。 */
+    /** 每次重排开始时调 —— **重置预算**（含"本轮已用尽"标志）。 */
     fun beginBatch() {
         usedNs = 0L
+        exhausted = false
     }
+
+    /**
+     * 本轮预算是否已用尽。
+     *
+     * `true` ⇒ 重排器**必须把 C 层贡献整体撤掉**。理由：已经有一半候选
+     * 拿过 `lm` 加分、另一半没有 —— 混在一起排序等于两套标准，
+     * 而且"谁在候选表里靠前谁占便宜"，这种不可预测比"整层不参与"更糟。
+     */
+    val budgetExhausted: Boolean
+        get() = exhausted
 
     // ==================== 打分 ====================
 
@@ -230,10 +264,11 @@ object LstmScorer {
         if (candidate.isEmpty()) return 0.0
 
         // ── 预算检查（在调用**之前**，避免超支后才后悔）──
-        if (usedNs >= (BUDGET_MS * 1_000_000).toLong()) {
-            if (!budgetWarned) {
-                budgetWarned = true
-                Timber.i("[lstm] 预算用尽（%.1fms）—— 本轮后面的候选不参与", BUDGET_MS)
+        if (usedNs >= BUDGET_NS) {
+            exhausted = true
+            if (!warned) {
+                warned = true
+                Timber.i("[lstm] 预算用尽（%.1fms）—— 本轮 C 层贡献整体撤掉", BUDGET_MS)
             }
             return 0.0
         }
@@ -247,20 +282,28 @@ object LstmScorer {
     }
 
     /**
-     * 原始 log P → 加权。
+     * 原始分 → 加权。线性映射 + 封顶。
      *
-     * 线性映射 + 封顶：`(-8 → 0)`，`(-3 → 2.5)`，`(≥-2 → 3.0)`。
+     * ## ⚠️ 下面这些数字是**平移后**的坐标
      *
-     * 为什么不直接用原始分：它是**负的 log 概率**（-2 ~ -8），
+     * 模型吐的是**原始 logit**（没过 logsumexp），比"log 概率"整体高一个
+     * logsumexp（实测 ≈6.9，见 [LSE_SHIFT]）。所以同一个语义点有两个坐标：
+     *
+     * | 语义 | 平移前（log 概率） | 平移后（logit ＝ 这里的入参） | 加权 |
+     * |---|---|---|---|
+     * | 地板 | −8.0 | **−1.1** ← 就是 [RAW_FLOOR] | 0.0 |
+     * | 中段 | −3.0 | **3.9** | 2.5 |
+     * | 封顶 | ≥ −2.0 | **≥ 4.9** | 3.0 |
+     *
+     * 两列的**语义完全一样**（真候选中位数落在 1.41、随机候选都落 0），
+     * 只是坐标轴平移了 —— 这也是为什么斜率还是 `/2.0` 没变。
+     * **改 [LSE_SHIFT] 时这张表要跟着改。**
+     *
+     * 为什么不直接用原始分：它是负的（log 概率 −2 ~ −8），
      * 而 A/B 两层都是 0 ~ 正数。不映射的话 C 层会把所有候选都往下拉。
      */
     private fun toBoost(raw: Double): Double =
         ((raw - RAW_FLOOR) / 2.0).coerceIn(0.0, MAX_BOOST)
-
-    /** 重置"预算用尽"的日志标记（下一轮重新报）。 */
-    fun resetWarn() {
-        budgetWarned = false
-    }
 
     // ==================== 给 UI ====================
 

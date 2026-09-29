@@ -363,7 +363,15 @@ object CandidateReranker {
         LstmScorer.beginBatch()
 
         val now = System.currentTimeMillis()
-        val scored = ArrayList<Pair<Int, Double>>(list.size)
+
+        // 【C 层 / 公平性】**两阶段**：先收齐每个候选的完整分层得分，
+        // 再决定 C 层的贡献要不要整体撤掉。
+        //
+        // 为什么不能一边算一边定：预算是**中途**用尽的。用尽时前面的候选
+        // 已经拿到 `lm` 加分、后面的没有 —— 同一次排序里两套标准，
+        // 而且"谁在候选表里靠前谁占便宜"。这种不可预测比整层不参与更糟。
+        // **要么全有，要么全无。**
+        val rows = ArrayList<Pair<Int, ScoringPipeline.Score>>(list.size)
         list.forEachIndexed { i, w ->
             val t = w.text.trim()
             if (t.isEmpty()) return@forEachIndexed
@@ -372,11 +380,23 @@ object CandidateReranker {
             // 【ABCD】统一打分：A 统计 + B 个人纠错 + C 神经 → 融合。
             // 码（`lastCode`）给 B 层查表用。
             val s = ScoringPipeline.score(t, lastCode, scores, pairs, profile)
-            // 三层全 0 → 这个词我们一无所知，保持引擎原序（不插手）
+            // 五层全 0 → 这个词我们一无所知，保持引擎原序（不插手）
             if (s.isZero) return@forEachIndexed
-            scored += i to s.fused
+            rows += i to s
         }
-        if (scored.isEmpty()) return data
+        if (rows.isEmpty()) return data
+
+        // 【C 层 / 公平性】预算用尽 ⇒ 把 `lm` 的贡献**整体扣掉**。
+        // 扣法就是 `fused - lm * wLm` —— `fused` 本来就是各项的加权和，
+        // 所以减得干干净净，不必把五层重算一遍。
+        val dropLm = LstmScorer.budgetExhausted && profile.wLm > 0.0
+        if (dropLm) {
+            Timber.i("[rerank] C 层超预算 —— 本轮整体不参与（%d 个候选）", rows.size)
+        }
+        val scored = ArrayList<Pair<Int, Double>>(rows.size)
+        for ((i, s) in rows) {
+            scored += i to if (dropLm) s.fused - s.lm * profile.wLm else s.fused
+        }
 
         // 分数高的优先；同分保持引擎原有的先后（稳定）
         scored.sortWith(compareByDescending<Pair<Int, Double>> { it.second }.thenBy { it.first })

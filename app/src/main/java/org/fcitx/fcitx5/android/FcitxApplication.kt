@@ -18,6 +18,7 @@ import androidx.preference.PreferenceManager
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.plus
+import org.fcitx.fcitx5.android.core.data.DataManager
 import org.fcitx.fcitx5.android.daemon.FcitxDaemon
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
 import org.fcitx.fcitx5.android.data.insight.CandidateReranker
@@ -165,9 +166,14 @@ class FcitxApplication : Application() {
         // 必须**在重排器之后**初始化 —— 重排器第一次跑之前画像就得是就绪的，
         // 否则会拿默认档去打第一屏分（虽然默认档也是对的，但日志会对不上）。
         UserProfile.init(ctx)
-        // 【fainput / C 层】微 LM 候选打分：**没有模型文件时静默跳过**（正常状态）。
-        // 放最后：它要读几 MB 文件，不该挡住前面几个轻量初始化。
+        // 【fainput / C 层】微 LM 候选打分。
+        //
+        // ⚠️ **时序坑**：模型是随 assets 一起同步下来的（`DataManager.sync()`），
+        //    而同步发生在**引擎启动之后** —— 此刻多半还找不到文件。
+        //    所以：先试一次（同步早已完成的冷启动路径），再挂回调等下一次同步。
+        //    少了后一半，内置模型在**全新安装**上永远加载不了。
         LstmScorer.init(ctx)
+        DataManager.addOnNextSyncedCallback { LstmScorer.init(ctx) }
         // 【fainput / D-2+D-3】个人词库：让引擎真正认识你的词
         PersonalDictionary.init(ctx)
         // 【fainput / L3】报一句 LLM 状态：**后端 + 模型分开说**。

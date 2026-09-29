@@ -44,7 +44,11 @@ object LstmNative {
     /**
      * 给一个候选打分：`log P(候选的每个字 | 上文 + 候选前面的字)` 的**平均**。
      *
-     * ⚠️ **必须在后台线程调**（一次可能几十毫秒）。
+     * ⚠️ **它在主线程上跑**（`CandidateReranker.reorder()` 直接调）。
+     *    兜住卡顿的不是线程，而是 [LstmScorer] 的**预算守卫** ——
+     *    每次调用前先看本轮用掉多少纳秒，超了就返回 0。
+     *
+     * 真机实测单个候选约 **0.25 ms**（20 候选 × 4 字合计 4.89 ms）。
      */
     private external fun nativeScore(context: String, candidate: String): Float
 

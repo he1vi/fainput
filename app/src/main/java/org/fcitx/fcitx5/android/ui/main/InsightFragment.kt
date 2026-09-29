@@ -224,8 +224,9 @@ class InsightFragment : PaddingPreferenceFragment() {
                 // 标题 ≤4 字、摘要只放值（§零.1）。
                 addPreference(Preference(context).apply {
                     setup("微 LM", LstmScorer.stats())
-                    // 模型得从**系统文件选择器**导进来（filesDir 非 root 写不进），
-                    // 所以这一行必须能点开 —— 否则模型在真机上装不上。
+                    // 【内置模型】模型随 APK 一起装（`assets/lstm/model.fnlstm`），
+                    // 不需要导入。这一行能点开是为了**看状态 + 诊断**
+                    // （载入 / 试算 / 释放），不是导入入口。
                     setOnPreferenceClickListener {
                         navigateWithAnim(SettingsRoute.LstmModel)
                         true

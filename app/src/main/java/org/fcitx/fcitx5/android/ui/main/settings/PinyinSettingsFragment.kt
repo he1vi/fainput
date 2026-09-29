@@ -83,12 +83,16 @@ class PinyinSettingsFragment : FcitxPreferenceFragment() {
      * 所以这里加一行**说明**（不是开关 —— 开关已经有了，别重复）。
      */
     override fun decorateScreen(screen: PreferenceScreen) {
+        // ⚠️ `PreferenceScreen` **没有** `addPreference(index, pref)` 这个重载
+        // （只有单参数的）—— 位置要用 `Preference.order` 控制。
+        // 自动生成的那些项用的是 `DEFAULT_ORDER = Int.MAX_VALUE`，
+        // 所以给一个负数就一定排在它们前面。
         screen.addPreference(
-            0,
             Preference(requireContext()).apply {
                 title = "笔画找字"
                 summary = "h横 s竖 p撇 n捺 z折 · 例 hhh = 三横"
                 isSelectable = false
+                order = -1
             }
         )
     }

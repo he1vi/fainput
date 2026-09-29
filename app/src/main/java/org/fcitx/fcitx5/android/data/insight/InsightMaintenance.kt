@@ -91,13 +91,18 @@ object InsightMaintenance {
     }
 
     /**
-     * 手动强制跑一次（忽略节流与设备状态）。
-     * 留给将来「设置 → 立即整理数据」按钮用。
+     * 手动强制跑一次 —— **忽略节流与设备状态**。
+     *
+     * 由「设置 → 输入数据 → 立即整理」按钮调用。
+     *
+     * 绕开闸门的方式是**直接调 [runOnce]**（不经过 [trigger] 里的
+     * `shouldRunNow()`），而不是靠某个 `force` 参数 ——
+     * 那个参数从来没被读过，已删除。
      */
     fun forceRun() {
         val d = dao ?: return
         scope.launch {
-            runCatching { runOnce(d, "manual", force = true) }
+            runCatching { runOnce(d, "manual") }
                 .onFailure { Timber.w(it, "[insight] forced maintenance failed") }
         }
     }
@@ -220,7 +225,20 @@ object InsightMaintenance {
         return true
     }
 
-    private suspend fun runOnce(d: InsightDao, reason: String, force: Boolean = false) {
+    /**
+     * 真正干活的。
+     *
+     * ⚠️ **节流（6 小时）和设备状态检查不在这个函数里** —— 由调用方负责：
+     *
+     * | 入口 | 闸门 |
+     * |---|---|
+     * | [trigger]  | **有**（`shouldRunNow()`）—— 自动触发走这条 |
+     * | [forceRun] | **无** —— 用户点「立即整理」走这条 |
+     *
+     * 所以这里只防**重入**，不防"跑得太勤"。
+     * （原先有个 `force: Boolean` 参数想表达这件事，但它从没被读过 —— 已删。）
+     */
+    private suspend fun runOnce(d: InsightDao, reason: String) {
         if (running) return
         running = true
         try {

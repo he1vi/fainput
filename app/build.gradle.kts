@@ -22,10 +22,11 @@ android {
                 targets(
                     // jni
                     "native-lib",
-                    // 【fainput / L3】llama.cpp 的 JNI（后台整理层的推理后端）
-                    // 没有 llama.cpp 源码时它编为桩，但**目标必须存在** ——
-                    // targets() 里写了名字却建不出来，CMake 会直接报错。
-                    "native-llm",
+                    // 【fainput】这里原来还有 "native-llm"（llama.cpp 的 JNI）。
+                    // 大模型整条链已删（2026-09-30）—— CMake 目标没了，
+                    // 但 targets() 里留着名字会让 CMake 直接报
+                    // "Unexpected native build target native-llm"。
+                    // 所以两处必须一起删：CMakeLists 的 add_library + 这里的名字。
                     // copy fcitx5 built-in addon libraries
                     "copy-fcitx5-modules",
                     // android specific modules

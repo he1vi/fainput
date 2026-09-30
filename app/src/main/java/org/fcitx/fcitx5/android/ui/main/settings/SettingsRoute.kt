@@ -105,7 +105,6 @@ sealed class SettingsRoute : Parcelable {
     data object Transfer : SettingsRoute()
 
     /**
-/**
      * 【fainput】模型页 —— **只有微 LM**。
      *
      * ## 2026-09-30：大模型那条链整体拆掉

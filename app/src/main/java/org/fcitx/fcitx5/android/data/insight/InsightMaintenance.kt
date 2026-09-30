@@ -227,8 +227,9 @@ object InsightMaintenance {
             runCatching {
                 val words = d.wordCount()
                 val pairs = d.bigramCount()
-                lastWords = words
-                lastPairs = pairs
+                // ⚠️ 原来这里还有两行 `lastWords = words` / `lastPairs = pairs`，
+                // 那是给**已删除的叙述**当输入的。叙述删了，字段也删了，
+                // 所以这两行一起去掉（留着会 Unresolved reference）。
                 UserProfile.publish(UserProfile.derive(words, pairs, System.currentTimeMillis()))
             }.onFailure { Timber.w(it, "[insight] 画像计算失败") }
 

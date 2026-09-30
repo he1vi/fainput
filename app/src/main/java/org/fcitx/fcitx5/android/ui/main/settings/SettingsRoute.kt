@@ -105,19 +105,23 @@ sealed class SettingsRoute : Parcelable {
     data object Transfer : SettingsRoute()
 
     /**
-     * 【fainput / L3】模型页。
+/**
+     * 【fainput】模型页 —— **只有微 LM**。
      *
-     * 把「后端 / 模型文件 / 能否载入」三件事**分开**显示 ——
-     * 因为它们是三个独立失败点，而且长得都不像失败。
-     */
-    @Serializable
-    data object LlmModel : SettingsRoute()
-
-    /**
-     * 【fainput / C 层】微 LM 模型页。
+     * ## 2026-09-30：大模型那条链整体拆掉
      *
-     * 存在的唯一理由：模型要放进 `filesDir/lstm/`，那是**应用私有目录**，
-     * 非 root 设备上写不进去 —— 没有这一页，"把模型装上去"根本无从下手。
+     * 用户原话「**那不要这个了**」。
+     *
+     * LLM 原本只用来把统计结果写成一句「习惯总结」，而为了这一句话：
+     *   · APK 里要常驻 **3.3 MB** 的 `libnative-llm.so`
+     *   · 每次 CI 还要多拉一遍 llama.cpp 源码（拖慢构建）
+     *   · 它**不在打字路径上** —— 对输入体验零贡献
+     *
+     * ## 微 LM 是**内置**的
+     *
+     * `assets/lstm/model.fnlstm` 随 `DataManager` 同步到数据目录，
+     * **不需要导入、也没有导入入口**。这一页只做**诊断**：
+     * 看状态 / 载入 / 试算 / 释放。
      */
     @Serializable
     data object LstmModel : SettingsRoute()
@@ -255,11 +259,8 @@ sealed class SettingsRoute : Parcelable {
             fragment<ClipboardHistoryFragment, ClipboardHistory> {
                 label = "剪贴板历史"
             }
-            fragment<LlmModelFragment, LlmModel> {
-                label = "模型"
-            }
             fragment<LstmModelFragment, LstmModel> {
-                label = "微 LM"
+                label = "模型"
             }
             fragment<TransferFragment, Transfer> {
                 label = "备份"

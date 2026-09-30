@@ -97,71 +97,17 @@ install(DIRECTORY "${PREBUILT_DIR}/libime/data/" DESTINATION "${FCITX_INSTALL_DA
 install(DIRECTORY "${PREBUILT_DIR}/opencc/data/" DESTINATION "${FCITX_INSTALL_DATADIR}/opencc" COMPONENT prebuilt-assets)
 
 # ============================================================================
-# 【fainput / L3】llama.cpp —— 后台整理层的推理后端
+# 【fainput】llama.cpp —— 已删除（2026-09-30）
 #
-# ## 源码不在仓库里
+# 用户决定去掉大模型（原话「那不要这个了」）。它原本只用来把统计结果
+# 写成一句「习惯总结」—— **不参与打字、不参与预测、不参与整理**。
 #
-# CI 在构建前按**固定 tag** 拉下来（见 .github/workflows/build.yml）。
-# 为什么不 vendor：源码 ~40MB，而这条线路 push 只有 ~38KB/s。
-# 为什么锁 tag：llama.cpp 自己说 ABI **不稳定**（docs/build.md §Notes），
-#             而且它的 API 变动极快（`llama_load_model_from_file` 就被改名过）。
+# 而为了那一句话，代价是：
+#   · APK 里常驻 3.3 MB 的 `libnative-llm.so`
+#   · 每次 CI 多拉一遍 llama.cpp 源码（~40 MB，拖慢构建）
 #
-# ## 本地没有也能编
+# 所以整条链一起移除：`llm-jni.cpp` / `native-llm` 目标 / CI 的拉取步骤。
 #
-# 下面带 `EXISTS` 守卫 —— 缺源码时 `native-llm` 编成一堆桩函数，
-# App 其余功能完全不受影响。**不会出现"少一个目录整个项目编不了"。**
-#
-# ## 开关来自官方 docs/build.md 的 Android 段
-#
-#   GGML_NATIVE=OFF    别按宿主机 CPU 生成指令（交叉编译必须）
-#   GGML_OPENMP=OFF    NDK 用不了 OpenMP
-#   GGML_LLAMAFILE=OFF llamafile 不支持 Android
-#   LLAMA_OPENSSL=OFF  我们零网络，不需要 TLS
+# ⚠️ **LSTM 推理一点没受影响** —— `lstm/lstm-jni.cpp` 挂在 `native-lib`
+#    上，从来就不依赖 llama.cpp（它连 llama 架构都不是）。
 # ============================================================================
-set(FAINPUT_LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp")
-if(EXISTS "${FAINPUT_LLAMA_DIR}/CMakeLists.txt")
-    set(FAINPUT_WITH_LLAMA ON)
-    # 只要库本身：tests / tools / examples / server / common / UI 全关。
-    # （作为 add_subdirectory 进来时 LLAMA_STANDALONE 本来就是 OFF，
-    #   这里再显式钉死一遍，免得上游改默认值。）
-    set(LLAMA_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_TOOLS     OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_SERVER    OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_COMMON    OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_APP       OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_UI        OFF CACHE BOOL "" FORCE)
-    set(LLAMA_USE_PREBUILT_UI OFF CACHE BOOL "" FORCE)
-    set(LLAMA_OPENSSL         OFF CACHE BOOL "" FORCE)
-    set(LLAMA_LLGUIDANCE      OFF CACHE BOOL "" FORCE)
-    set(LLAMA_CURL            OFF CACHE BOOL "" FORCE)
-    set(GGML_NATIVE           OFF CACHE BOOL "" FORCE)
-    set(GGML_OPENMP           OFF CACHE BOOL "" FORCE)
-    set(GGML_LLAMAFILE        OFF CACHE BOOL "" FORCE)
-    set(GGML_CPU_KLEIDIAI     OFF CACHE BOOL "" FORCE)
-    set(GGML_BUILD_TESTS      OFF CACHE BOOL "" FORCE)
-    set(GGML_BUILD_EXAMPLES   OFF CACHE BOOL "" FORCE)
-    # 静态链进 native-llm，不在 APK 里多塞几个 .so
-    set(FAINPUT_SHARED_BACKUP ${BUILD_SHARED_LIBS})
-    set(BUILD_SHARED_LIBS OFF)
-    # 静态库要被链进共享库，必须带 PIC。
-    # Android 工具链本来就是 ON，这里显式钉一遍 —— 否则一旦哪天变 OFF，
-    # 报出来的会是 "relocation ... can not be used when making a shared object"
-    # 这种要查半天的链接错误。
-    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-    # EXCLUDE_FROM_ALL：llama.cpp 自己的 install 规则不要进来
-    # （否则它的头文件和静态库会被打进 APK 的 assets）
-    add_subdirectory(${FAINPUT_LLAMA_DIR} "${CMAKE_CURRENT_BINARY_DIR}/llama.cpp" EXCLUDE_FROM_ALL)
-    set(BUILD_SHARED_LIBS ${FAINPUT_SHARED_BACKUP})
-    message(STATUS "fainput: llama.cpp 已启用 —— 后台整理层可用")
-else()
-    set(FAINPUT_WITH_LLAMA OFF)
-    message(STATUS "fainput: 没找到 llama.cpp 源码 —— native-llm 编为桩（功能降级）")
-endif()
-
-add_library(native-llm SHARED llm-jni.cpp)
-target_compile_definitions(native-llm PRIVATE "FAINPUT_WITH_LLAMA=$<BOOL:${FAINPUT_WITH_LLAMA}>")
-target_link_libraries(native-llm log)
-if(FAINPUT_WITH_LLAMA)
-    target_link_libraries(native-llm llama)
-endif()

@@ -228,13 +228,8 @@ class InsightFragment : PaddingPreferenceFragment() {
                 addPreference(Preference(context).apply {
                     setup("个人纠错", CorrectionScorer.stats())
                 })
-                // D 层的叙述（大模型写的）。没有模型 / 还没跑过就不显示 ——
-                // 空着一行「暂无」比不显示更让人困惑。
-                InsightMaintenance.narrative().takeIf { it.isNotEmpty() }?.let { nar ->
-                    addPreference(Preference(context).apply {
-                        setup("习惯总结", nar)
-                    })
-                }
+                // D 层的叙述（大模型写的）已删除 —— 见 `InsightMaintenance` 的
+                // 「叙述（已删除）」。所以这里不再有「习惯总结」那一行。
 
                 pRunNow = Preference(context).apply {
                     setup("立即整理", "")

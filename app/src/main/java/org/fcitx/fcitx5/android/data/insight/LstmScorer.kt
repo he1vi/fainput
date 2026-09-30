@@ -183,7 +183,7 @@ object LstmScorer {
     /**
      * 找并加载模型。**在后台线程调**（加载要读几 MB 文件）。
      *
-     * 多个模型时取**最大的那个**（和 `LlmModel` 的策略一致：大的通常更好）。
+     * 多个模型时取**最大的那个**（大的通常更好）。
      */
     fun init(ctx: Context) {
         if (ready) return

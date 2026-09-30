@@ -82,14 +82,14 @@ class MainFragment : PaddingPreferenceFragment() {
                 ) {
                     navigateWithAnim(SettingsRoute.PinyinSettings)
                 }
-                // 【fainput / L3】模型页 —— 后端/模型文件/能否载入分开看，
-                // 否则"构建成功"和"真有 LLM"根本分不清。
+                // 【fainput】模型页 —— 现在**只有微 LM**（大模型那条链 2026-09-30 已拆掉）。
+                // 微 LM 是内置的，所以这一页只做诊断：看状态 / 载入 / 试算 / 释放。
                 addPreference(
                     "模型",
                     "",
                     icon = R.drawable.ic_baseline_extension_24
                 ) {
-                    navigateWithAnim(SettingsRoute.LlmModel)
+                    navigateWithAnim(SettingsRoute.LstmModel)
                 }
             }
             addCategory("Fcitx") {

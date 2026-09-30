@@ -80,6 +80,17 @@ object BigramModel {
         val w = word.trim()
         if (w.isEmpty() || w.length > MAX_WORD_LENGTH) return
 
+        // 【语言隔离】搭配表也只收中文词 —— 和 `word_stat` 同一道闸（[LangGate]）。
+        // 少了它，你打的英文词会进 `word_bigram`，变成 A 层 `pair` 轴上的噪音。
+        //
+        // ⚠️ 而且这里**必须断开搭配链**，不能"当作没看见"：
+        // 中间插了个英文词 ⇒ 前后两个中文词**根本不是搭配**，
+        // 硬把它们配成对是在制造假数据。
+        if (!LangGate.isChineseWord(w, max = MAX_WORD_LENGTH)) {
+            lastWord = ""
+            return
+        }
+
         // 换 session（新输入框 / 中间隔了 5 分钟以上）→ 上下文断了，不配对
         if (session != sessionId) {
             sessionId = session

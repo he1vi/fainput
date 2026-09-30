@@ -532,7 +532,11 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         // 长度 1 的不进词表：直通提交会把单个数字/符号/字母刷进来，
         // 一串密码般的符号就能产生几十行噪音。
         // 词表要的是"词"，不是字符。
-        if (word.length < 2 || word.length > MAX_WORD_LENGTH) return
+        //
+        // 【语言隔离】还要求**至少含一个汉字** —— 否则你打的英文词也会进词表，
+        // 然后被 A 层**无差别**提升到中文候选栏前面（用户 2026-09-30 报的 bug）。
+        // 判据统一在 [LangGate]，别再抄一遍（抄三份就会漂移）。
+        if (!LangGate.isChineseWord(word, max = MAX_WORD_LENGTH)) return
         val indexSum = if (index >= 0) index else 0
         val indexCount = if (index >= 0) 1 else 0
         val rowId = d.insertWord(

@@ -423,9 +423,9 @@ class InputView(
                 broadcaster.onInputPanelUpdate(d)
             }
             is FcitxEvent.IMChangeEvent -> {
-                // 【ABCD / 边界】把当前引擎告诉学习层 —— 只有拼音系才参与打分，
-                // 其余引擎（五笔 / 日语 / 英语）走引擎原序，一个字都不动。
-                CandidateReranker.setActiveIm(it.data.addon, it.data.uniqueName)
+                // 【ABCD / 边界 + 语言隔离】把当前引擎告诉学习层。
+                // 两道闸：**拼音系** 且 **中文语言** —— 缺一个就走引擎原序。
+                CandidateReranker.setActiveIm(it.data.addon, it.data.uniqueName, it.data.languageCode)
                 broadcaster.onImeUpdate(it.data)
             }
             is FcitxEvent.StatusAreaEvent -> {

@@ -194,12 +194,24 @@ object CandidateReranker {
      * **切换引擎必须立刻生效** —— 不然用户从拼音切到五笔，
      * 第一个词就会吃到中文的词频分。
      */
-    fun setActiveIm(addon: String?, uniqueName: String?) {
+    fun setActiveIm(addon: String?, uniqueName: String?, languageCode: String? = null) {
         val a = addon?.trim()?.lowercase() ?: ""
         val u = uniqueName?.trim()?.lowercase() ?: ""
-        val like = a == "pinyin" || u == "pinyin" || u == "shuangpin"
+        // 【语言隔离】两道都要过：
+        //   ① 引擎得是**拼音系** —— 五笔 / 日语 / 英语的候选权重尺度我们不知道，
+        //      乱动它们的排序比不动更危险
+        //   ② 语言得是**中文** —— 判据和上游 `CommonKeyActionListener`（空格键行为）
+        //      用的是同一条：`languageCode.startsWith("zh")`
+        //
+        // 少了 ② 的话，非中文引擎也会吃到我们的词表加分 ——
+        // 这就是用户报的「模型词库没对英文隔离」的另一半。
+        val like = LangGate.isChineseLang(languageCode) &&
+            (a == "pinyin" || u == "pinyin" || u == "shuangpin")
         if (like != pinyinLike) {
-            Timber.i("[rerank] 引擎切换：%s（addon=%s）→ 学习层%s", u, a, if (like) "参与" else "不参与")
+            Timber.i(
+                "[rerank] 引擎切换：%s（addon=%s lang=%s）→ 学习层%s",
+                u, a, languageCode ?: "?", if (like) "参与" else "不参与"
+            )
         }
         pinyinLike = like
     }
@@ -506,7 +518,12 @@ object CandidateReranker {
                     if (w.count < minCount) return@forEach
                     val text = w.word.trim()
                     // 只要词，不要句子。长度 1 的不进（直通提交的噪音）。
-                    if (text.length < 2 || text.length > 12) return@forEach
+                    //
+                    // 【语言隔离】这里**必须再挡一次**，而且它比写入端更关键：
+                    // 旧版本已经往 `word_stat` 里攒过英文词，光改写入端
+                    // **清不掉那些存量** —— 只有在这里挡住，它们才立刻失效。
+                    // （用户要求「覆盖安装后不能再出现」，靠的就是这一道。）
+                    if (!LangGate.isChineseWord(text)) return@forEach
                     // 【A1 + A2】近 7 天的使用**全额计入**；
                     // 更早的使用按时间衰减打折。
                     // 注意这是"只抬不降"的：热词只会更靠前，冷词不会被压成负数。

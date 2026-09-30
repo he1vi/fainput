@@ -412,7 +412,13 @@ object PersonalDictionary {
             val code = ca + cb
             if (code.length < MIN_PAIR_CODE) return@forEach
             val phrase = pair.a + pair.b
-            if (phrase.length > MAX_WORD_LEN) return@forEach
+            // 【语言隔离】长出来的词也必须是中文（长度检查也在这个函数里）。
+            //
+            // 其实上面 `codeOf` 已经**间接**挡住了英文：英文词拿不到码 ⇒ 返回 null。
+            // 但那是**副作用，不是设计** —— 万一以后有人放宽 `codeOf`，
+            // 英文词组就会顺着这条路写进引擎的 `customphrase`。
+            // 所以显式写一道，把意图钉住。
+            if (!LangGate.isChineseWord(phrase, max = MAX_WORD_LEN)) return@forEach
             // 走和单词**同一条**写入通道：prefs 里记够门槛，下次 writeFile 带出去
             val key = K_WORD + code + "|" + phrase
             if (p.getInt(key, 0) >= MIN_CONFIRM) return@forEach

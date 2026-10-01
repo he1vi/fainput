@@ -442,7 +442,14 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
                     if (expired) {
                         sessionId.takeIf { it > 0 }?.let { d.closeSession(it, prevCommitAt) }
                         sessionId = -1L
+                        // 【最近上文】会话断了 ⇒ 上文也该断，否则会跨会话串味
+                        RecentContext.clear()
                     }
+                    // 【最近上文】只有**明文**提交才进缓冲 ——
+                    // 敏感内容走 HASHED / COUNT_ONLY，**永远不进**（项目第一原则）。
+                    // 这是 LSTM 的上下文来源：原来只喂上一个词（2~4 字），
+                    // 实测白丢 4 个点（见 [RecentContext] 里的扫描表）。
+                    if (level == InsightLevel.PLAIN) RecentContext.append(text)
                     val sid = ensureSession(
                         d, snapshotPkg, snapshotClass, snapshotVariation,
                         snapshotSensitive, snapshotSessionStart

@@ -15,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import kotlinx.coroutines.launch
+import org.fcitx.fcitx5.android.data.insight.RecentContext
 import org.fcitx.fcitx5.android.data.transfer.TransferPack
 import org.fcitx.fcitx5.android.ui.common.PaddingPreferenceFragment
 import java.text.SimpleDateFormat
@@ -167,6 +168,9 @@ class TransferFragment : PaddingPreferenceFragment() {
             .setPositiveButton("清空") { _, _ ->
                 lifecycleScope.launch {
                     val n = TransferPack.wipe()
+                    // 【最近上文】是纯内存的滚动缓冲 —— 清库不会碰到它，必须显式清，
+                    // 否则"清空全部数据"之后 LSTM 还拿着清空前的 16 个字当上下文。
+                    RecentContext.clear()
                     last = "已清空 $n 项"
                     render()
                 }

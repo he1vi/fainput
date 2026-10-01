@@ -381,7 +381,8 @@ object CandidateReranker {
         // 【影子统计】我们这一轮的"第一" vs 引擎的"第一"。
         // 用户上屏时 `InsightRecorder` 会对比文本，两边各算一次命中 ——
         // 这是判断"重排是在帮忙还是帮倒忙"的唯一直接证据。
-        ShadowStats.noteCandidates(engineFirst, filtered.firstOrNull()?.word)
+        // ⚠️ `Item.word` 是 `CandidateWord`（不是 String），文字在 `.text` 上。
+        ShadowStats.noteCandidates(engineFirst, filtered.firstOrNull()?.word?.text)
 
         // 顺序和内容都没变 ⇒ 不设 perm。
         // `displayToEngine` 会退化成恒等映射，这是最省事也最安全的路径。
@@ -420,7 +421,13 @@ object CandidateReranker {
         // 【C 层】上文 + 预算重置。
         // 上下文只设一次 —— native 侧会缓存它的 LSTM 状态，几十个候选共用一份，
         // 这就是"每个候选只跑自己那几个字"的来源。
-        LstmScorer.setContext(BigramModel.previousWord)
+        //
+        // 【最近上文】优先用 [RecentContext] 的"最近 16 字"。
+        // 原来只喂 [BigramModel.previousWord]（上一个词，2~4 字），
+        // 实测（`eval_ime.py --ctx` 扫描）白丢 4 个点：
+        //     16 字 72.1% · 8 字 73.5% · 4 字 69.3% · 2 字 67.5%
+        // 缓冲为空时（刚启动 / 会话刚断 / 敏感输入后）退回上一个词。
+        LstmScorer.setContext(RecentContext.text.ifEmpty { BigramModel.previousWord })
         LstmScorer.beginBatch()
 
         val now = System.currentTimeMillis()

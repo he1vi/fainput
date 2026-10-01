@@ -222,8 +222,76 @@ void ensureContext(const std::string &ctx) {
 }
 
 /*
- * 打分：候选每个字的 logit 的平均（**未归一化**，C 方案）。
+ * 把候选切成 token 串 —— **最长匹配**（4→3→2 字，都不中才退单字）。
  *
+ * ⚠️ 为什么必须这么做（这是本轮修的 bug）：
+ *
+ *   vocab3 里有 4012 个**词** token（「浪费」「经历」「好看」…），模型是在
+ *   【字词混合】语料上训的（corpus_words3.txt：93.65% 是词、6.35% 拆字）。
+ *   但原来这里用 splitUtf8 把候选**无条件切成单字**，于是：
+ *
+ *       auto it = g_model.tokenIndex.find(ch);   // 只查单字
+ *
+ *   ⇒ 词 token 在推理时**一次都不会被激活** ⇒ 训练时学到的词级先验
+ *     完全用不上。
+ *
+ *   实测（check_word_tokens.py，口语留出集 900 对）：
+ *       同首字同长度干扰（最难）  逐字 54.4%  →  整词 71.6%   ★ +17.1 点
+ *       混合长度干扰（真实场景）  逐字 63.2%  →  整词 69.4%      +6.2 点
+ *   而且纯字级模型（modelD_c11k，词 token 从没训过）拿词 token 打分
+ *   反而更差（48.2%）—— 说明这 +17 点完全来自【词 token 真的被训练过】，
+ *   不是"切得少所以分高"。
+ *
+ *   现状最刺眼的一点：同首字干扰下逐字打分 = 54.4%，**基本等于抛硬币**。
+ *   因为同一个字在同一位置的 logit 必然相同，胜负全看第二个字，
+ *   而模型对"第二个字该是什么"几乎没有知识。走词 token 才有。
+ *
+ * 成本：每个位置最多 3 次 hash 查找（~150ns），4 字候选 < 1μs，
+ *       相对 scoreCandidate 的 4.8ms 预算完全可忽略。
+ *
+ * 分母用 token 数（不是字数）—— 实测两者只差 0.1 点，而 token 数是
+ * 模型的自然语义（平均每 token 的 logprob），所以不额外做归一化。
+ */
+std::vector<int> tokenizeLongest(const std::string &s) {
+    std::vector<int> out;
+    const std::vector<std::string> chs = splitUtf8(s);
+    const size_t n = chs.size();
+    size_t i = 0;
+    while (i < n) {
+        int bestId = -1;
+        size_t bestLen = 0;
+        /* 最长匹配：先试 4 字，再 3 字，再 2 字 */
+        size_t maxLen = n - i < 4 ? n - i : 4;
+        for (size_t ln = maxLen; ln >= 2; ln--) {
+            std::string sub;
+            sub.reserve(ln * 3);
+            for (size_t k = 0; k < ln; k++) sub += chs[i + k];
+            auto it = g_model.tokenIndex.find(sub);
+            if (it != g_model.tokenIndex.end()) {
+                bestId = it->second;
+                bestLen = ln;
+                break;
+            }
+        }
+        if (bestId >= 0) {
+            out.push_back(bestId);
+            i += bestLen;
+        } else {
+            /* 退单字。不在词表 ⇒ 跳过（和原来的 OOV 处理一致：
+               拿 unk 的 logit 去平均只会把分拉低，那是噪声不是信号）。 */
+            auto it = g_model.tokenIndex.find(chs[i]);
+            if (it != g_model.tokenIndex.end()) out.push_back(it->second);
+            i += 1;
+        }
+    }
+    return out;
+}
+
+/*
+ * 打分：候选的 logit 平均（**未归一化**，C 方案）。
+ *
+ * 候选先经 tokenizeLongest 切成【字词混合】的 token 串，再逐 token 取
+ * logit 求平均（分母 = token 数）。
  * 取**平均**而不是求和 —— 否则长候选天然吃亏（3 个字的句子永远输给 1 个字的词）。
  * 返回 0 表示"这一层不参与"（OOV / 空候选 / 模型没装）。
  *
@@ -250,30 +318,20 @@ void ensureContext(const std::string &ctx) {
  */
 float scoreCandidate(const std::string &ctx, const std::string &cand) {
     if (g_model.vocab == 0) return 0.0f;
-    auto chars = splitUtf8(cand);
-    if (chars.empty()) return 0.0f;
+    auto toks = tokenizeLongest(cand);
+    if (toks.empty()) return 0.0f;
 
     ensureContext(ctx);
 
     /* 从缓存状态分叉 —— 不打乱缓存本身 */
     LstmState st = g_ctxState;
     double tot = 0.0;
-    int counted = 0;
 
-    for (const auto &ch : chars) {
-        auto it = g_model.tokenIndex.find(ch);
-        if (it == g_model.tokenIndex.end()) {
-            /* OOV：这个字不在词表里。**跳过但不计分** ——
-               拿 unk 的 logit 去平均只会把分拉低，那是噪声不是信号。 */
-            continue;
-        }
-        int t = it->second;
+    for (int t : toks) {
         tot += (double)logitAt(g_model, st, t);
-        counted++;
         step(g_model, st, t);
     }
-    if (counted == 0) return 0.0f;
-    return (float)(tot / counted);
+    return (float)(tot / (double)toks.size());
 }
 
 } // namespace

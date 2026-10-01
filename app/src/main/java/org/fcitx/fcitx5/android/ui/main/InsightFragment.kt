@@ -25,6 +25,7 @@ import org.fcitx.fcitx5.android.data.insight.CorrectionScorer
 import org.fcitx.fcitx5.android.data.insight.InsightMaintenance
 import org.fcitx.fcitx5.android.data.insight.InsightRecorder
 import org.fcitx.fcitx5.android.data.insight.PersonalDictionary
+import org.fcitx.fcitx5.android.data.insight.ShadowStats
 import org.fcitx.fcitx5.android.data.insight.UserProfile
 import org.fcitx.fcitx5.android.data.insight.db.LevelCount
 import org.fcitx.fcitx5.android.data.insight.db.StatsProjection
@@ -65,6 +66,7 @@ class InsightFragment : PaddingPreferenceFragment() {
     private lateinit var pTodayEvents: Preference
     private lateinit var pCodeLen: Preference
     private lateinit var pFirstHit: Preference
+    private lateinit var pShadow: Preference
     private lateinit var pSpeed: Preference
     private lateinit var pPaged: Preference
 
@@ -106,6 +108,7 @@ class InsightFragment : PaddingPreferenceFragment() {
                 pTodayEvents = info("提交", "—")
                 pCodeLen = info("平均码长", "—")
                 pFirstHit = info("首选命中率", "—")
+                pShadow = info("重排效果", "暂无")
                 pSpeed = info("速度", "—")
                 pPaged = info("翻页率", "—")
             }
@@ -319,7 +322,9 @@ class InsightFragment : PaddingPreferenceFragment() {
                 100.0 * s.candidateHits / s.candidateSamples, s.candidateHits, s.candidateSamples
             )
         } else "暂无"
-
+        // 【影子统计】引擎原序第一 vs 我们排序第一，谁命中率高。
+        // 内存态、不落盘 ⇒ 重启清零（够用：用一天就有几百个样本）。
+        pShadow.summary = ShadowStats.line()
         pSpeed.summary = if (s.durationMs > 0) {
             String.format(Locale.US, "%.0f 字/分钟", s.chars * 60_000.0 / s.durationMs)
         } else "—"

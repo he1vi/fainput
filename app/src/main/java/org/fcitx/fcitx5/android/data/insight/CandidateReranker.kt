@@ -368,16 +368,20 @@ object CandidateReranker {
         ensureSuppressedLoaded()
         perm = null
         val list = data.candidates
-
+        // 【影子统计】引擎原序的第 0 个 —— 在排序**之前**抓，否则就被覆盖了。
+        val engineFirst = list.firstOrNull()?.text
         // ── 第 ① 段：排序 ──
         // 条件不满足时 `ordered` 就是引擎原序（0,1,2,…），**一个都不动**。
         val ordered = sortPhase(list)
-
         // ── 第 ② 段：加工 ──
         // 【从 Rime 借鉴】这一段**和排序无关** —— 排序不参与时它照样跑。
         // （遮罩必须在密码框里生效，和"要不要重排"毫无关系。）
         val items = ordered.map { CandidateFilters.Item(it, list[it]) }
         val filtered = CandidateFilters.run(items, CandidateFilters.Ctx(sensitive))
+        // 【影子统计】我们这一轮的"第一" vs 引擎的"第一"。
+        // 用户上屏时 `InsightRecorder` 会对比文本，两边各算一次命中 ——
+        // 这是判断"重排是在帮忙还是帮倒忙"的唯一直接证据。
+        ShadowStats.noteCandidates(engineFirst, filtered.firstOrNull()?.word)
 
         // 顺序和内容都没变 ⇒ 不设 perm。
         // `displayToEngine` 会退化成恒等映射，这是最省事也最安全的路径。

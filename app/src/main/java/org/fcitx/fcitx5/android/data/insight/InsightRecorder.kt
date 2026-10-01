@@ -408,6 +408,10 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         // 【D-2】引擎**这次有没有给出这个词** —— 决定要不要写进词库。
         // 必须在这里快照：下面 resetCommitState() 会把 lastCandidates 清空。
         val snapshotOfferedByEngine = lastCandidates.contains(text)
+        // 【影子统计】对比「引擎原序第一」和「我们排序第一」谁命中。
+        // 口径和上面的 `candidateSamples` 完全一致（只在候选列表里能找到时计数），
+        // 所以两边的数字可以直接比。**内存态、不落盘** —— 见 [ShadowStats] 的说明。
+        ShadowStats.onCommit(text, snapshotOfferedByEngine)
         // 【D-3】取出「刚被撤销的那次提交」，取完就清 —— 只用一次
         val undoneCodeSnapshot = undoneCode
         val undoneWordSnapshot = undoneWord

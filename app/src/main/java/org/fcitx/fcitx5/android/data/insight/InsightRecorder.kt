@@ -399,8 +399,14 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         // 候选序号：cursorIndex 只在"有高亮"时才有值，用空格/数字键选词时恒为 -1。
         // 所以拿提交的文本去当前候选页里反查 —— 这才是真正的"选了第几个"。
         //   0 = 首选命中；-1 = 找不到（整句提交 / 标点 / 英文等）
+        // 【口径修正】优先用**显示顺序**（重排后的）—— 那才是用户看到的东西。
+        // `lastCandidates` 来自原始事件流（`FcitxInputMethodService` 里重排**之前**），
+        // 是引擎原序 ⇒ 拿它算会把「首选命中率」算成"你在引擎顺序里选了第 0 个"，
+        // 而不是你的真实体验。2026-10-05 就是因为这个口径对不上，
+        // 才顺藤摸出「引擎 78.3% vs 我们 63.7%」这个 −14.6 点的问题。
+        val shown = ShadowStats.displayCandidates.ifEmpty { lastCandidates }
         val snapshotCandidateIndex = candidateIndex.takeIf { it >= 0 }
-            ?: lastCandidates.indexOf(text).takeIf { it >= 0 }
+            ?: shown.indexOf(text).takeIf { it >= 0 }
             ?: -1
         val snapshotTap = eventTap.toMap()
         // 【D-2】这次用到的拼音码也要在重置前快照下来
@@ -409,9 +415,9 @@ object InsightRecorder : CoroutineScope by CoroutineScope(SupervisorJob() + Disp
         // 必须在这里快照：下面 resetCommitState() 会把 lastCandidates 清空。
         val snapshotOfferedByEngine = lastCandidates.contains(text)
         // 【影子统计】对比「引擎原序第一」和「我们排序第一」谁命中。
-        // 口径和上面的 `candidateSamples` 完全一致（只在候选列表里能找到时计数），
-        // 所以两边的数字可以直接比。**内存态、不落盘** —— 见 [ShadowStats] 的说明。
-        ShadowStats.onCommit(text, snapshotOfferedByEngine)
+        // 口径跟着上面的 `snapshotCandidateIndex` 走（都用**显示顺序**），
+        // 这样它和 DB 的「首选命中率」可以直接比。
+        ShadowStats.onCommit(text, shown.contains(text))
         // 【D-3】取出「刚被撤销的那次提交」，取完就清 —— 只用一次
         val undoneCodeSnapshot = undoneCode
         val undoneWordSnapshot = undoneWord

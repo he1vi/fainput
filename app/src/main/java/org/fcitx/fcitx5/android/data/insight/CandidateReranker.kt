@@ -383,6 +383,10 @@ object CandidateReranker {
         // 这是判断"重排是在帮忙还是帮倒忙"的唯一直接证据。
         // ⚠️ `Item.word` 是 `CandidateWord`（不是 String），文字在 `.text` 上。
         ShadowStats.noteCandidates(engineFirst, filtered.firstOrNull()?.word?.text)
+        // 【口径修正】把**显示顺序**整份交给采集层。
+        // `InsightRecorder` 挂在原始事件流上（重排之前），它手里的候选是引擎原序
+        // ⇒ 不修的话「首选命中率」算的是引擎的顺序，不是你看到的那个。
+        ShadowStats.noteDisplay(filtered.map { it.word.text })
 
         // 顺序和内容都没变 ⇒ 不设 perm。
         // `displayToEngine` 会退化成恒等映射，这是最省事也最安全的路径。
@@ -462,13 +466,46 @@ object CandidateReranker {
             Timber.i("[rerank] C 层超预算 —— 本轮整体不参与（%d 个候选）", rows.size)
         }
         val scored = ArrayList<Pair<Int, Double>>(rows.size)
+        // 【引擎首选保护】同时记下每个候选的「用户行为证据」（**不含 LSTM**）。
+        val userEvidence = HashMap<Int, Double>(rows.size)
         for ((i, s) in rows) {
             scored += i to if (dropLm) s.fused - s.lm * profile.wLm else s.fused
+            userEvidence[i] = s.freq + s.pair + s.fix
         }
 
         // 分数高的优先；同分保持引擎原有的先后（稳定）
         scored.sortWith(compareByDescending<Pair<Int, Double>> { it.second }.thenBy { it.first })
-        val front = scored.take(profile.maxPromote).map { it.first }
+        val front = scored.take(profile.maxPromote).map { it.first }.toMutableList()
+
+        // ══════════════════════════════════════════════════════════
+        // 【引擎首选保护】—— 这条规则是拿真机数据换来的，别删。
+        //
+        // 2026-10-05 实测（用户设备，4,054 个样本）：
+        //     引擎原序第 0 位的命中率      78.3%
+        //     我们重排后第 0 位的命中率    63.7%     ← **−14.6 点**
+        //
+        // ⇒ 引擎（198K 词词典 + 33MB n-gram）的第一名比我们准得多：
+        //   它是**整串解码**的产物，而我们只是拿 LSTM 事后重排，
+        //   且这个 LSTM 只训到 8,400 步（离收敛还远）。
+        //
+        // 所以：**只有带「用户行为证据」的候选才有资格顶替引擎的第一。**
+        //   · 证据 = A 层词频 + 搭配 + 个人纠错（`freq + pair + fix`）
+        //     —— 这是"你这个人确实这么打过"，可信
+        //   · **不算 LSTM**（`lm`）—— 它的错误率正是这 −14.6 点的来源
+        //
+        // 效果：你打过的词照样能提到第一位（个性化保留），
+        //      没打过的新词则把第一位让回给引擎（不再帮倒忙）。
+        // ══════════════════════════════════════════════════════════
+        if (list.size > 1 && front.isNotEmpty() && front[0] != 0) {
+            val challenger = front[0]
+            if ((userEvidence[challenger] ?: 0.0) <= 0.0) {
+                front.remove(challenger)
+                front.add(0, 0)
+                // 别超过 maxPromote —— 多出来那个不提升，留在原序里
+                while (front.size > profile.maxPromote) front.removeAt(front.size - 1)
+                Timber.i("[rerank] 引擎首选受保护（挑战者 %d 无用户证据）", challenger)
+            }
+        }
 
         // 已经都在最前面 → 不用动
         if (front.withIndex().all { (i, engineIdx) -> i == engineIdx }) return identity

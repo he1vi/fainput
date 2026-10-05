@@ -77,6 +77,33 @@ object ShadowStats {
     val movedCount = AtomicInteger(0)
 
     /**
+     * 重排后**显示顺序**的候选文本（= 用户真正看到的顺序）。
+     *
+     * ## 为什么需要它（这是个口径 bug）
+     *
+     * `InsightRecorder` 挂在**原始事件流**上（`FcitxInputMethodService.handleFcitxEvent`
+     * 的最前面，重排还没发生），所以它手里的 `lastCandidates` 是**引擎原序**。
+     * 于是「首选命中率」算的是"你在**引擎顺序**里选了第 0 个"——
+     * 可你看到的是**我们重排后的顺序**。两个口径对不上。
+     *
+     * 实测（2026-10-05）就露馅了：
+     * ```
+     *     DB「首选命中率」  78.9%   ← 按引擎序算
+     *     影子「引擎第一」  78.3%   ← 两者互相验证，说明影子是对的
+     *     影子「我们第一」  63.7%   ← 这才是你真实的体验
+     * ```
+     * ⇒ 把这个列表交给 `InsightRecorder`，DB 的口径就跟着修正了。
+     */
+    @Volatile
+    var displayCandidates: List<String> = emptyList()
+        private set
+
+    /** 候选列表重排完 / 加工完时调用（`CandidateReranker.reorder` 末尾）。 */
+    fun noteDisplay(list: List<String>) {
+        displayCandidates = list
+    }
+
+    /**
      * 候选列表到达时调用（`CandidateReranker.reorder` 里）。
      *
      * @param engine 引擎原序的第一个候选文本（没有就传 null）
